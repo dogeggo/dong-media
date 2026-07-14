@@ -171,8 +171,7 @@
 - **现代化导航UI**：桌面端水平顶部导航栏，移动端Liquid Glass底部导航，响应式切换
 - **移动端横幅优化**：滑动卡片式布局，支持触摸手势导航，更适合移动设备
 - **TVBox诊断移动端优化**：优化TVBox诊断页面移动端布局，防止文本溢出，完成所有组件移动端响应式修复
-- **虚拟滚动**：react-window 2.2.0，支持大量内容流畅加载，智能容器尺寸检测（ResizeObserver）
-- **虚拟滚动美化开关**：渐变样式、图标、动画效果，用户可自由切换显示模式
+- **首页横向列表虚拟化**：基于可见区域裁剪和 ResizeObserver，减少非可见卡片的渲染开销
 - **响应式网格**：2-8 列自适应，自动计算最优布局
 - **豆瓣详情增强**：评分、演职人员、首播日期、时长、制作信息完整展示，海报代理防403错误，24小时缓存优化
   - **豆瓣分页优化**：统一分页常量防止不一致、添加去重逻辑防止重复、优化图片预加载和API代理确保CORS安全
@@ -286,8 +285,7 @@
 - ✅ 现代化导航UI（桌面水平顶栏、移动Liquid Glass底部导航、响应式切换）
 - ✅ 移动端横幅优化（滑动卡片式布局、触摸手势导航、更适合移动设备）
 - ✅ 移动端布局优化（减少头部高度、紧凑布局、修复过度间距）
-- ✅ 虚拟滚动（react-window 2.2.0、ResizeObserver智能检测、渐进式加载）
-- ✅ 虚拟滚动美化开关（渐变样式、图标、动画、用户可切换）
+- ✅ 首页横向列表虚拟化（可见区域裁剪、ResizeObserver 尺寸检测）
 - ✅ 响应式网格（2-8 列自适应、实际容器宽度动态计算）
 - ✅ 豆瓣详情增强（评分、演职人员、首播日期、时长、制作信息、海报代理防403）
 - ✅ 豆瓣评论集成（播放页展示用户评论、丰富观影体验）
@@ -359,7 +357,7 @@
 | 播放器    | [ArtPlayer 5.3.0](https://github.com/zhw2590582/ArtPlayer) · [HLS.js 1.6.15](https://github.com/video-dev/hls.js/) · [artplayer-plugin-danmuku 5.2.0](https://github.com/zhw2590582/ArtPlayer) |
 | 状态管理  | React 19.0.0 Context API · React Hooks                                                                                                                                                         |
 | 数据存储  | Kvrocks · Redis · Upstash · localStorage                                                                                                                                                       |
-| 虚拟化    | [react-window 2.2.3](https://github.com/bvaughn/react-window) · ResizeObserver                                                                                                                 |
+| 虚拟化    | 自定义可见区域裁剪 · ResizeObserver                                                                                                                                                            |
 | UI 组件   | [@headlessui/react 2.2.4](https://headlessui.com/) · [Lucide Icons 0.438.0](https://lucide.dev/) · [React Icons 5.4.0](https://react-icons.github.io/react-icons/)                             |
 | 代码质量  | ESLint 9.28.0 · Prettier 3.5.3 · Jest 29.7.0 · Husky 7.0.4                                                                                                                                     |
 | 部署      | Docker · Docker Compose · pnpm 10.14.0                                                                                                                                                         |
@@ -1188,7 +1186,6 @@ services:
 - [Next.js](https://nextjs.org/) — React 框架
 - [ArtPlayer](https://github.com/zhw2590582/ArtPlayer) — 强大的网页视频播放器
 - [HLS.js](https://github.com/video-dev/hls.js) — HLS 流媒体支持
-- [react-window](https://github.com/bvaughn/react-window) — 虚拟滚动组件
 - [Tailwind CSS](https://tailwindcss.com/) — CSS 框架
 
 ### 数据源与服务

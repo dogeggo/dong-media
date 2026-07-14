@@ -171,8 +171,7 @@ This project is a deeply customized version based on **MoonTV**, continuously de
 - **Modern Navigation UI**: Desktop horizontal top navbar, mobile Liquid Glass bottom navigation, responsive switching
 - **Mobile Banner Optimization**: Swipeable card-style layout with touch gesture navigation, better suited for mobile devices
 - **TVBox Diagnostics Mobile Optimization**: Optimized TVBox diagnostic page mobile layout, prevent text overflow, completed all component mobile responsive fixes
-- **Virtual Scrolling**: react-window 2.2.0, smooth loading for massive content, smart container size detection (ResizeObserver)
-- **Virtual Scrolling Toggle**: Gradient styles, icons, animations, user switchable display modes
+- **Homepage Horizontal List Virtualization**: Visible-range rendering and ResizeObserver reduce the rendering cost of off-screen cards
 - **Responsive Grid**: 2-8 column adaptive, auto-calculated optimal layout
 - **Douban Details Enhancement**: Complete rating, cast & crew, premiere date, duration, production info, poster proxy to prevent 403 errors, 24-hour cache optimization
   - **Douban Pagination Optimization**: Unified pagination constants prevent inconsistency, added deduplication logic prevents duplicates, optimized image preloading and API proxy ensure CORS safety
@@ -295,8 +294,7 @@ This project is licensed under **CC BY-NC-SA 4.0**, with the following terms:
 - ✅ Modern navigation UI (desktop horizontal top bar, mobile Liquid Glass bottom nav, responsive switching)
 - ✅ Mobile banner optimization (swipeable card-style layout, touch gesture navigation, better mobile experience)
 - ✅ Mobile layout optimization (reduced header height, tighter layout, fixed excessive spacing)
-- ✅ Virtual scrolling (react-window 2.2.0, ResizeObserver smart detection, progressive loading)
-- ✅ Virtual scrolling toggle (gradient styles, icons, animations, user switchable)
+- ✅ Homepage horizontal list virtualization (visible-range rendering, ResizeObserver size detection)
 - ✅ Responsive grid (2-8 column adaptive, actual container width dynamic calculation)
 - ✅ Douban details enhancement (rating, cast & crew, premiere date, duration, production info, poster proxy to prevent 403)
 - ✅ Douban reviews integration (play page displays user reviews, enriched viewing experience)
@@ -373,7 +371,7 @@ This project is licensed under **CC BY-NC-SA 4.0**, with the following terms:
 | Player         | [ArtPlayer 5.3.0](https://github.com/zhw2590582/ArtPlayer) · [HLS.js 1.6.15](https://github.com/video-dev/hls.js/) · [artplayer-plugin-danmuku 5.2.0](https://github.com/zhw2590582/ArtPlayer) |
 | State Mgmt     | React 19.0.0 Context API · React Hooks                                                                                                                                                         |
 | Data Storage   | Kvrocks · Redis · Upstash · localStorage                                                                                                                                                       |
-| Virtualization | [react-window 2.2.3](https://github.com/bvaughn/react-window) · ResizeObserver                                                                                                                 |
+| Virtualization | Custom visible-range rendering · ResizeObserver                                                                                                                                                |
 | UI Components  | [@headlessui/react 2.2.4](https://headlessui.com/) · [Lucide Icons 0.438.0](https://lucide.dev/) · [React Icons 5.4.0](https://react-icons.github.io/react-icons/)                             |
 | Code Quality   | ESLint 9.28.0 · Prettier 3.5.3 · Jest 29.7.0 · Husky 7.0.4                                                                                                                                     |
 | Deployment     | Docker · Docker Compose · pnpm 10.14.0                                                                                                                                                         |
@@ -1202,7 +1200,6 @@ Based on [MoonTV](https://github.com/MoonTechLab/LunaTV) with extensive customiz
 - [Next.js](https://nextjs.org/) — React framework
 - [ArtPlayer](https://github.com/zhw2590582/ArtPlayer) — Powerful web video player
 - [HLS.js](https://github.com/video-dev/hls.js) — HLS streaming support
-- [react-window](https://github.com/bvaughn/react-window) — Virtual scrolling component
 - [Tailwind CSS](https://tailwindcss.com/) — CSS framework
 
 ### Data Sources & Services

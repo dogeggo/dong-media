@@ -35,10 +35,6 @@ const SearchSuggestions = dynamic(
 const VideoCard = dynamic(() => import('@/components/VideoCard'), {
   ssr: false,
 });
-const VirtualSearchGrid = dynamic(
-  () => import('@/components/VirtualSearchGrid'),
-  { ssr: false },
-);
 const NetDiskSearchResults = dynamic(
   () => import('@/components/NetDiskSearchResults'),
   { ssr: false },
@@ -62,7 +58,6 @@ const AcgSearch = dynamic(() => import('@/components/AcgSearch'), {
 import type { SearchFilterCategory } from '@/components/SearchResultFilter';
 import type { TMDBFilterState } from '@/components/TMDBFilterPanel';
 import type { VideoCardHandle } from '@/components/VideoCard';
-import type { VirtualSearchGridRef } from '@/components/VirtualSearchGrid';
 
 function SearchPageClient() {
   const [isMounted, setIsMounted] = useState(false);
@@ -107,8 +102,6 @@ function SearchPageClient() {
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   // 返回顶部按钮显示状态
   const [showBackToTop, setShowBackToTop] = useState(false);
-  // VirtualSearchGrid ref for scroll control
-  const virtualGridRef = useRef<VirtualSearchGridRef>(null);
 
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -124,14 +117,6 @@ function SearchPageClient() {
   const pendingResultsRef = useRef<SearchResult[]>([]);
   const flushTimerRef = useRef<number | null>(null);
   const [useFluidSearch, setUseFluidSearch] = useState(true);
-  // 虚拟化开关状态
-  const [useVirtualization, setUseVirtualization] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('useVirtualization');
-      return saved !== null ? JSON.parse(saved) : false; // 默认关闭
-    }
-    return false;
-  });
 
   // 网盘搜索相关状态
   const [searchType, setSearchType] = useState<
@@ -289,15 +274,6 @@ function SearchPageClient() {
   const [viewMode, setViewMode] = useState<'agg' | 'all'>(() => {
     return getDefaultAggregate() ? 'agg' : 'all';
   });
-
-  // 保存虚拟化设置
-  const toggleVirtualization = () => {
-    const newValue = !useVirtualization;
-    setUseVirtualization(newValue);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('useVirtualization', JSON.stringify(newValue));
-    }
-  };
 
   // 在“无排序”场景用于每个源批次的预排序：完全匹配标题优先，其次年份倒序，未知年份最后
   const sortBatchForNoOrder = (items: SearchResult[]) => {
@@ -1060,19 +1036,13 @@ function SearchPageClient() {
     runSearch(suggestion);
   };
 
-  // 返回顶部功能 - 同时滚动页面和重置虚拟列表
+  // 返回顶部功能
   const scrollToTop = () => {
     try {
-      // 1. 滚动页面到顶部
       document.body.scrollTo({
         top: 0,
         behavior: 'smooth',
       });
-
-      // 2. 重置虚拟列表到第一项
-      if (virtualGridRef.current) {
-        virtualGridRef.current.scrollToTop();
-      }
     } catch (_error) {
       // 如果平滑滚动完全失败，使用立即滚动
       document.body.scrollTop = 0;
@@ -1729,7 +1699,7 @@ function SearchPageClient() {
                       )}
                     </h2>
                   </div>
-                  {/* 筛选器 + 开关控件 */}
+                  {/* 筛选器 + 聚合开关 */}
                   <div className='mb-8 space-y-4'>
                     {/* 筛选器 */}
                     <div className='flex-1 min-w-0'>
@@ -1748,32 +1718,8 @@ function SearchPageClient() {
                       )}
                     </div>
 
-                    {/* 开关控件行 */}
+                    {/* 聚合开关 */}
                     <div className='flex items-center justify-end gap-6'>
-                      {/* 虚拟化开关 */}
-                      <label className='flex items-center gap-3 cursor-pointer select-none shrink-0 group'>
-                        <span className='text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 group-hover:text-primary-600 dark:group-hover:text-primary-400 transition-colors'>
-                          ⚡ 虚拟滑动
-                        </span>
-                        <div className='relative'>
-                          <input
-                            type='checkbox'
-                            className='sr-only peer'
-                            checked={useVirtualization}
-                            onChange={toggleVirtualization}
-                          />
-                          <div className='w-11 h-6 bg-linear-to-r from-gray-200 to-gray-300 rounded-full peer-checked:from-primary-400 peer-checked:to-purple-500 transition-all duration-300 dark:from-gray-600 dark:to-gray-700 dark:peer-checked:from-primary-500 dark:peer-checked:to-purple-600 shadow-inner'></div>
-                          <div className='absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-all duration-300 peer-checked:translate-x-5 shadow-lg peer-checked:shadow-primary-300 dark:peer-checked:shadow-primary-500/50 peer-checked:scale-105'></div>
-                          {/* 开关内图标 */}
-                          <div className='absolute top-1.5 left-1.5 w-3 h-3 flex items-center justify-center pointer-events-none transition-all duration-300 peer-checked:translate-x-5'>
-                            <span className='text-[10px] peer-checked:text-white text-gray-500'>
-                              {useVirtualization ? '✨' : '○'}
-                            </span>
-                          </div>
-                        </div>
-                      </label>
-
-                      {/* 聚合开关 */}
                       <label className='flex items-center gap-3 cursor-pointer select-none shrink-0 group'>
                         <span className='text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors'>
                           🔄 聚合
@@ -1799,24 +1745,7 @@ function SearchPageClient() {
                       </label>
                     </div>
                   </div>
-                  {/* 条件渲染：虚拟化 vs 传统网格 */}
-                  {useVirtualization ? (
-                    <VirtualSearchGrid
-                      ref={virtualGridRef}
-                      allResults={searchResults}
-                      filteredResults={filteredAllResults}
-                      aggregatedResults={aggregatedResults}
-                      filteredAggResults={filteredAggResults}
-                      viewMode={viewMode}
-                      searchQuery={searchQuery}
-                      isLoading={isLoading}
-                      groupRefs={groupRefs}
-                      groupStatsRef={groupStatsRef}
-                      getGroupRef={getGroupRef}
-                      computeGroupStats={computeGroupStats}
-                    />
-                  ) : // 传统网格渲染（保持原有逻辑）
-                  searchResults.length === 0 ? (
+                  {searchResults.length === 0 ? (
                     isLoading ? (
                       <div className='flex justify-center items-center h-40'>
                         <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-green-500'></div>
