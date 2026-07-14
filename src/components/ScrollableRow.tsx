@@ -1,6 +1,7 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import {
   Children,
+  isValidElement,
   memo,
   useCallback,
   useEffect,
@@ -15,7 +16,9 @@ interface ScrollableRowProps {
   children: React.ReactNode;
   scrollDistance?: number;
   enableAnimation?: boolean;
-  enableVirtualization?: boolean; // 启用虚拟化（仅当子元素很多时）
+  enableVirtualization?: boolean;
+  virtualItemClassName?: string;
+  virtualPlaceholderClassName?: string;
 }
 
 function ScrollableRow({
@@ -23,6 +26,8 @@ function ScrollableRow({
   scrollDistance = 1000,
   enableAnimation = false,
   enableVirtualization = false,
+  virtualItemClassName = 'min-w-24 w-24 sm:min-w-45 sm:w-44',
+  virtualPlaceholderClassName = 'aspect-[2/3] w-full',
 }: ScrollableRowProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [showLeftScroll, setShowLeftScroll] = useState(false);
@@ -31,7 +36,11 @@ function ScrollableRow({
   const checkScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const [visibleRange, setVisibleRange] = useState({ start: 0, end: 20 });
+  const [visibleRange, setVisibleRange] = useState({ start: 0, end: 8 });
+  const [focusedVirtualIndex, setFocusedVirtualIndex] = useState<number | null>(
+    null,
+  );
+  const shouldVirtualize = enableVirtualization && !enableAnimation;
 
   // 使用 useMemo 缓存 children 数量，减少不必要的 effect 触发
   const childrenCount = useMemo(() => Children.count(children), [children]);
@@ -54,8 +63,8 @@ function ScrollableRow({
       );
 
       // 虚拟化：精确计算可见范围（参考 react-window 实现）
-      if (enableVirtualization && containerRef.current.children.length > 0) {
-        const overscan = 2;
+      if (shouldVirtualize && containerRef.current.children.length > 0) {
+        const overscan = 3;
         const viewportStart = scrollLeft;
         const viewportEnd = scrollLeft + clientWidth;
 
@@ -100,17 +109,44 @@ function ScrollableRow({
         });
       }
     }
-  }, [enableVirtualization, childrenCount]);
+  }, [shouldVirtualize, childrenCount]);
 
-  // 虚拟化：只渲染可见范围内的子元素
+  // 保留所有轻量槽位来维持准确滚动宽度，只挂载可见区域及 overscan 内的重型子组件。
   const visibleChildren = useMemo(() => {
-    if (!enableVirtualization || childrenCount <= 20) {
-      return children; // 少于20个元素，不需要虚拟化
+    if (!shouldVirtualize) {
+      return children;
     }
 
     const childArray = Children.toArray(children);
-    return childArray.slice(visibleRange.start, visibleRange.end);
-  }, [enableVirtualization, children, childrenCount, visibleRange]);
+    return childArray.map((child, index) => {
+      const isVisible =
+        (index >= visibleRange.start && index < visibleRange.end) ||
+        index === focusedVirtualIndex;
+      const childKey = isValidElement(child) ? child.key : index;
+
+      return (
+        <div
+          key={childKey ?? index}
+          className={`flex-none ${virtualItemClassName}`}
+          data-virtual-index={index}
+          data-virtual-mounted={isVisible ? 'true' : 'false'}
+        >
+          {isVisible ? (
+            child
+          ) : (
+            <div aria-hidden='true' className={virtualPlaceholderClassName} />
+          )}
+        </div>
+      );
+    });
+  }, [
+    children,
+    focusedVirtualIndex,
+    shouldVirtualize,
+    virtualItemClassName,
+    virtualPlaceholderClassName,
+    visibleRange,
+  ]);
 
   useEffect(() => {
     // 延迟检查，确保内容已完全渲染
@@ -194,6 +230,25 @@ function ScrollableRow({
         ref={containerRef}
         className='flex space-x-6 overflow-x-auto scrollbar-hide pt-3 pb-12 sm:pt-4 sm:pb-14 px-4 sm:px-6'
         onScroll={checkScroll}
+        onFocusCapture={(event) => {
+          if (!shouldVirtualize) return;
+
+          const slot = (event.target as HTMLElement).closest<HTMLElement>(
+            '[data-virtual-index]',
+          );
+          if (!slot || !event.currentTarget.contains(slot)) return;
+
+          const index = Number(slot.dataset.virtualIndex);
+          if (Number.isInteger(index)) setFocusedVirtualIndex(index);
+        }}
+        onBlurCapture={(event) => {
+          if (
+            shouldVirtualize &&
+            !event.currentTarget.contains(event.relatedTarget as Node | null)
+          ) {
+            setFocusedVirtualIndex(null);
+          }
+        }}
         style={{
           WebkitOverflowScrolling: 'touch', // iOS 惯性滚动
           willChange: 'scroll-position', // 提示浏览器优化滚动

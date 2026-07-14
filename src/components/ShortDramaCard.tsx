@@ -2,7 +2,7 @@
 
 import { Heart, Play, Star } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, startTransition, useCallback, useEffect, useState } from 'react';
 
 import {
   deleteFavorite,
@@ -14,6 +14,8 @@ import {
 import { ShortDramaItem } from '@/lib/types';
 import { processImageUrl } from '@/lib/utils';
 
+import { POSTER_FALLBACK } from '@/components/CardPoster';
+
 import { useNavigationLoading } from '@/contexts/NavigationLoadingContext';
 
 interface ShortDramaCardProps {
@@ -22,6 +24,55 @@ interface ShortDramaCardProps {
   className?: string;
   priority?: boolean;
 }
+
+const ShortDramaPoster = memo(function ShortDramaPoster({
+  alt,
+  priority,
+  src,
+}: {
+  alt: string;
+  priority: boolean;
+  src: string;
+}) {
+  const [imageLoaded, setImageLoaded] = useState(false);
+
+  const markImageLoaded = useCallback(() => {
+    startTransition(() => {
+      setImageLoaded((loaded) => (loaded ? loaded : true));
+    });
+  }, []);
+
+  return (
+    <>
+      <div
+        className='pointer-events-none absolute inset-0 z-10 opacity-0 transition-opacity duration-500 group-hover:opacity-100 group-hover:animate-[card-shimmer_2.5s_ease-in-out_infinite] motion-reduce:animate-none'
+        style={{
+          background:
+            'linear-gradient(110deg, transparent 30%, rgba(255,255,255,0.15) 45%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.15) 55%, transparent 70%)',
+          backgroundSize: '200% 100%',
+        }}
+      />
+
+      <img
+        src={src}
+        alt={alt}
+        className={`pointer-events-none h-full w-full select-none object-cover transition-all duration-700 ease-out ${
+          imageLoaded
+            ? 'scale-100 opacity-100 blur-0 group-hover:scale-105'
+            : 'scale-105 opacity-0 blur-md'
+        }`}
+        loading={priority ? 'eager' : 'lazy'}
+        decoding='async'
+        draggable={false}
+        onLoad={markImageLoaded}
+        onError={(event) => {
+          event.currentTarget.src = POSTER_FALLBACK;
+          markImageLoaded();
+        }}
+      />
+    </>
+  );
+});
 
 function ShortDramaCard({
   drama,
@@ -34,7 +85,6 @@ function ShortDramaCard({
   // 直接使用 props 中的 episode_count，不再尝试异步获取真实集数
   const realEpisodeCount = drama.episode_count;
   const showEpisodeCount = drama.episode_count > 1;
-  const [imageLoaded, setImageLoaded] = useState(false); // 图片加载状态
   const [favorited, setFavorited] = useState(false); // 收藏状态
   // 🚀 性能优化：延迟加载收藏状态
   const [shouldCheckStatus, setShouldCheckStatus] = useState(false);
@@ -126,36 +176,11 @@ function ShortDramaCard({
       <div onClick={handleClick} className='block cursor-pointer'>
         {/* 封面图片 */}
         <div className='relative aspect-[2/3] w-full overflow-hidden rounded-lg bg-gray-200 dark:bg-gray-800'>
-          {/* 渐变光泽动画层 */}
-          <div
-            className='absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none z-10'
-            style={{
-              background:
-                'linear-gradient(110deg, transparent 30%, rgba(255,255,255,0.15) 45%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.15) 55%, transparent 70%)',
-              backgroundSize: '200% 100%',
-              animation: 'card-shimmer 2.5s ease-in-out infinite',
-            }}
-          />
-
-          <img
+          <ShortDramaPoster
+            key={drama.cover}
             src={processImageUrl(drama.cover)}
             alt={drama.name}
-            className={`h-full w-full object-cover transition-all duration-700 ease-out ${
-              imageLoaded
-                ? 'opacity-100 blur-0 scale-100 group-hover:scale-105'
-                : 'opacity-0 blur-md scale-105'
-            } pointer-events-none select-none`}
-            loading={priority ? 'eager' : 'lazy'}
-            decoding='async'
-            draggable={false}
-            onLoad={() => setImageLoaded(true)}
-            onError={(e) => {
-              const img = e.target as HTMLImageElement;
-              // 重试失败，使用通用占位图
-              img.src =
-                'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="300" viewBox="0 0 200 300"%3E%3Crect fill="%23374151" width="200" height="300"/%3E%3Cg fill="%239CA3AF"%3E%3Cpath d="M100 80 L100 120 M80 100 L120 100" stroke="%239CA3AF" stroke-width="8" stroke-linecap="round"/%3E%3Crect x="60" y="140" width="80" height="100" rx="5" fill="none" stroke="%239CA3AF" stroke-width="4"/%3E%3Cpath d="M70 160 L90 180 L130 140" stroke="%239CA3AF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/%3E%3C/g%3E%3Ctext x="100" y="270" font-family="Arial" font-size="12" fill="%239CA3AF" text-anchor="middle"%3E暂无海报%3C/text%3E%3C/svg%3E';
-              setImageLoaded(true);
-            }}
+            priority={priority}
           />
 
           {/* 悬浮播放按钮 - 玻璃态效果 */}

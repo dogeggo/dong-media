@@ -3,19 +3,13 @@
 'use client';
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  Calendar,
-  ChevronRight,
-  Film,
-  Play,
-  Sparkles,
-  Trash2,
-  Tv,
-} from 'lucide-react';
+import { Trash2 } from 'lucide-react';
 import dynamic from 'next/dynamic';
-import Link from 'next/link';
 import {
+  memo,
+  startTransition,
   Suspense,
+  useCallback,
   useEffect,
   useMemo,
   useReducer,
@@ -46,20 +40,20 @@ import CapsuleSwitch from '@/components/CapsuleSwitch';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import ContinueWatching from '@/components/ContinueWatching';
 import HeroBanner from '@/components/HeroBanner';
+import HomeRecommendationSections from '@/components/home/HomeRecommendationSections';
 import PageLayout from '@/components/PageLayout';
-import ScrollableRow from '@/components/ScrollableRow';
-import SectionTitle from '@/components/SectionTitle';
-import ShortDramaCard from '@/components/ShortDramaCard';
 import { useSite } from '@/components/SiteProvider';
 import SkeletonCard from '@/components/SkeletonCard';
 
-// 首页卡片数量多，改为单独分包，避免阻塞首屏交互与导航响应。
+// 收藏夹按需加载重型卡片；首页推荐行在独立 Section 组件中按需加载。
 const VideoCard = dynamic(() => import('@/components/VideoCard'), {
   ssr: false,
   loading: () => <SkeletonCard />,
 });
 
-// 🎯 优化：合并状态管理 - 使用 useReducer 减少重渲染
+const MemoizedHeroBanner = memo(HeroBanner);
+
+// 合并首页状态；具体推荐区域通过 memo 组件建立独立渲染边界。
 interface HomeState {
   activeTab: 'home' | 'favorites';
   hotMovies: DoubanMovieDetail[];
@@ -170,7 +164,7 @@ function HomeClient() {
   const queryClient = useQueryClient();
   const { announcement } = useSite();
   const [isMounted, setIsMounted] = useState(false);
-  // 🎯 优化：使用 useReducer 合并 11 个 useState，减少重渲染
+  // 使用 reducer 集中管理首页状态，非交互型数据更新统一降为 transition。
   const [state, dispatch] = useReducer(homeReducer, {
     activeTab: 'home',
     hotMovies: [],
@@ -193,6 +187,10 @@ function HomeClient() {
     username: '',
     showAnnouncement: false,
   });
+
+  const dispatchDeferred = useCallback((action: HomeAction) => {
+    startTransition(() => dispatch(action));
+  }, []);
 
   // 解构状态以便使用
   const {
@@ -231,6 +229,60 @@ function HomeClient() {
     date.setHours(0, 0, 0, 0);
     return date;
   }, []); // 空依赖，只在组件挂载时计算一次
+
+  const heroItems = useMemo(
+    () => [
+      ...hotMovies.slice(0, 2).map((movie) => ({
+        id: movie.id,
+        title: movie.title,
+        poster: movie.poster,
+        backdrop: movie.backdrop,
+        trailerUrl: movie.trailerUrl,
+        description: movie.plot_summary,
+        year: movie.year,
+        rate: movie.rate,
+        douban_id: Number(movie.id),
+        type: 'movie',
+      })),
+      ...hotTvShows.slice(0, 2).map((show) => ({
+        id: show.id,
+        title: show.title,
+        poster: show.poster,
+        backdrop: show.backdrop,
+        trailerUrl: show.trailerUrl,
+        description: show.plot_summary,
+        year: show.year,
+        rate: show.rate,
+        douban_id: Number(show.id),
+        type: 'tv',
+      })),
+      ...hotVarietyShows.slice(0, 1).map((show) => ({
+        id: show.id,
+        title: show.title,
+        poster: show.poster,
+        backdrop: show.backdrop,
+        trailerUrl: show.trailerUrl,
+        description: show.plot_summary,
+        year: show.year,
+        rate: show.rate,
+        douban_id: Number(show.id),
+        type: 'variety',
+      })),
+      ...hotAnime.slice(0, 1).map((anime) => ({
+        id: anime.id,
+        title: anime.title,
+        poster: anime.poster,
+        backdrop: anime.backdrop,
+        trailerUrl: anime.trailerUrl,
+        description: anime.plot_summary,
+        year: anime.year,
+        rate: anime.rate,
+        douban_id: Number(anime.id),
+        type: 'anime',
+      })),
+    ],
+    [hotAnime, hotMovies, hotTvShows, hotVarietyShows],
+  );
 
   // 合并初始化逻辑 - 优化性能，减少重渲染
   useEffect(() => {
@@ -337,6 +389,10 @@ function HomeClient() {
   const [upcomingFilter, setUpcomingFilter] = useState<'all' | 'movie' | 'tv'>(
     'all',
   );
+  const handleUpcomingFilterChange = useCallback(
+    (filter: 'all' | 'movie' | 'tv') => setUpcomingFilter(filter),
+    [],
+  );
   const [showClearFavoritesDialog, setShowClearFavoritesDialog] =
     useState(false);
   const [requireClearConfirmation, setRequireClearConfirmation] =
@@ -382,7 +438,7 @@ function HomeClient() {
 
   useEffect(() => {
     const fetchRecommendData = async () => {
-      dispatch({
+      dispatchDeferred({
         type: 'SET_LOADING',
         payload: {
           movies: true,
@@ -403,7 +459,7 @@ function HomeClient() {
         .then((moviesData) => {
           if (moviesData?.code !== 200) return;
           const movies = moviesData.list;
-          dispatch({ type: 'SET_HOT_MOVIES', payload: movies });
+          dispatchDeferred({ type: 'SET_HOT_MOVIES', payload: movies });
 
           // 延迟加载详情，避免阻塞主线程
           setTimeout(() => {
@@ -429,7 +485,7 @@ function HomeClient() {
                 return null;
               }),
             ).then((results) => {
-              dispatch({
+              dispatchDeferred({
                 type: 'UPDATE_HOT_MOVIES',
                 payload: (prev) =>
                   prev.map((m) => {
@@ -444,7 +500,7 @@ function HomeClient() {
           console.warn('获取热门电影失败:', error);
         })
         .finally(() =>
-          dispatch({ type: 'SET_LOADING', payload: { movies: false } }),
+          dispatchDeferred({ type: 'SET_LOADING', payload: { movies: false } }),
         );
 
       const tvShowsPromise = getDoubanCategories({
@@ -455,7 +511,7 @@ function HomeClient() {
         .then((tvShowsData) => {
           if (tvShowsData?.code !== 200) return;
           const tvShows = tvShowsData.list;
-          dispatch({ type: 'SET_HOT_TV_SHOWS', payload: tvShows });
+          dispatchDeferred({ type: 'SET_HOT_TV_SHOWS', payload: tvShows });
 
           // 延迟加载详情
           setTimeout(() => {
@@ -481,7 +537,7 @@ function HomeClient() {
                 return null;
               }),
             ).then((results) => {
-              dispatch({
+              dispatchDeferred({
                 type: 'UPDATE_HOT_TV_SHOWS',
                 payload: (prev) =>
                   prev.map((s) => {
@@ -496,7 +552,7 @@ function HomeClient() {
           console.warn('获取热门剧集失败:', error);
         })
         .finally(() =>
-          dispatch({ type: 'SET_LOADING', payload: { tv: false } }),
+          dispatchDeferred({ type: 'SET_LOADING', payload: { tv: false } }),
         );
 
       const varietyShowsPromise = getDoubanCategories({
@@ -507,7 +563,10 @@ function HomeClient() {
         .then((varietyShowsData) => {
           if (varietyShowsData?.code !== 200) return;
           const varietyShows = varietyShowsData.list;
-          dispatch({ type: 'SET_HOT_VARIETY_SHOWS', payload: varietyShows });
+          dispatchDeferred({
+            type: 'SET_HOT_VARIETY_SHOWS',
+            payload: varietyShows,
+          });
 
           // 延迟加载详情
           if (varietyShows.length > 0) {
@@ -520,7 +579,7 @@ function HomeClient() {
                     detailsRes.list &&
                     detailsRes.list[0]
                   ) {
-                    dispatch({
+                    dispatchDeferred({
                       type: 'UPDATE_HOT_VARIETY_SHOWS',
                       payload: (prev) =>
                         prev.map((s) =>
@@ -541,7 +600,10 @@ function HomeClient() {
           console.warn('获取热门综艺失败:', error);
         })
         .finally(() =>
-          dispatch({ type: 'SET_LOADING', payload: { variety: false } }),
+          dispatchDeferred({
+            type: 'SET_LOADING',
+            payload: { variety: false },
+          }),
         );
 
       const animePromise = getDoubanCategories({
@@ -552,7 +614,7 @@ function HomeClient() {
         .then((animeData) => {
           if (animeData?.code !== 200) return;
           const animes = animeData.list;
-          dispatch({ type: 'SET_HOT_ANIME', payload: animes });
+          dispatchDeferred({ type: 'SET_HOT_ANIME', payload: animes });
 
           // 延迟加载详情
           if (animes.length > 0) {
@@ -565,7 +627,7 @@ function HomeClient() {
                     detailsRes.list &&
                     detailsRes.list[0]
                   ) {
-                    dispatch({
+                    dispatchDeferred({
                       type: 'UPDATE_HOT_ANIME',
                       payload: (prev) =>
                         prev.map((a) =>
@@ -586,16 +648,16 @@ function HomeClient() {
           console.warn('获取热门动漫失败:', error);
         })
         .finally(() =>
-          dispatch({ type: 'SET_LOADING', payload: { anime: false } }),
+          dispatchDeferred({ type: 'SET_LOADING', payload: { anime: false } }),
         );
 
       const shortDramasPromise = getRecommendedShortDramas(15)
         .then((dramas) => {
-          dispatch({
+          dispatchDeferred({
             type: 'SET_SHORT_DRAMAS_ERROR',
             payload: dramas.length === 0,
           });
-          dispatch({ type: 'SET_HOT_SHORT_DRAMAS', payload: dramas });
+          dispatchDeferred({ type: 'SET_HOT_SHORT_DRAMAS', payload: dramas });
 
           // 延迟加载详情
           // setTimeout(() => {
@@ -631,16 +693,22 @@ function HomeClient() {
         })
         .catch((error) => {
           console.warn('获取热门短剧失败:', error);
-          dispatch({ type: 'SET_SHORT_DRAMAS_ERROR', payload: true });
+          dispatchDeferred({
+            type: 'SET_SHORT_DRAMAS_ERROR',
+            payload: true,
+          });
         })
         .finally(() =>
-          dispatch({ type: 'SET_LOADING', payload: { shortDramas: false } }),
+          dispatchDeferred({
+            type: 'SET_LOADING',
+            payload: { shortDramas: false },
+          }),
         );
 
       const bangumiPromise = GetBangumiCalendarData()
         .then((bangumiData) => {
           if (!Array.isArray(bangumiData)) return;
-          dispatch({
+          dispatchDeferred({
             type: 'SET_BANGUMI_CALENDAR_DATA',
             payload: bangumiData,
           });
@@ -649,7 +717,10 @@ function HomeClient() {
           console.warn('获取 Bangumi 日历失败:', error);
         })
         .finally(() =>
-          dispatch({ type: 'SET_LOADING', payload: { bangumi: false } }),
+          dispatchDeferred({
+            type: 'SET_LOADING',
+            payload: { bangumi: false },
+          }),
         );
 
       const upcomingPromise = fetch('/api/release-calendar?limit=100')
@@ -663,7 +734,7 @@ function HomeClient() {
         .then((upcomingData) => {
           if (!upcomingData?.items) {
             console.warn('获取即将上映数据失败: 数据格式错误');
-            dispatch({ type: 'SET_UPCOMING_RELEASES', payload: [] });
+            dispatchDeferred({ type: 'SET_UPCOMING_RELEASES', payload: [] });
             return;
           }
 
@@ -686,12 +757,15 @@ function HomeClient() {
 
                 if (error) {
                   console.error('🎬 [Worker] 处理失败:', error);
-                  dispatch({ type: 'SET_UPCOMING_RELEASES', payload: [] });
+                  dispatchDeferred({
+                    type: 'SET_UPCOMING_RELEASES',
+                    payload: [],
+                  });
                   return;
                 }
 
                 console.log('🎬 [Main] Worker处理完成，分配结果:', stats);
-                dispatch({
+                dispatchDeferred({
                   type: 'SET_UPCOMING_RELEASES',
                   payload: selectedItems,
                 });
@@ -699,11 +773,17 @@ function HomeClient() {
 
               workerRef.current.onerror = (error) => {
                 console.error('🎬 [Worker] 错误:', error);
-                dispatch({ type: 'SET_UPCOMING_RELEASES', payload: [] });
+                dispatchDeferred({
+                  type: 'SET_UPCOMING_RELEASES',
+                  payload: [],
+                });
               };
             } catch (error) {
               console.error('🎬 [Worker] 初始化失败:', error);
-              dispatch({ type: 'SET_UPCOMING_RELEASES', payload: [] });
+              dispatchDeferred({
+                type: 'SET_UPCOMING_RELEASES',
+                payload: [],
+              });
             }
           }
 
@@ -718,15 +798,18 @@ function HomeClient() {
           } else {
             // Fallback: Worker 不可用时的处理
             console.warn('🎬 Web Worker不可用，跳过即将上映数据处理');
-            dispatch({ type: 'SET_UPCOMING_RELEASES', payload: [] });
+            dispatchDeferred({ type: 'SET_UPCOMING_RELEASES', payload: [] });
           }
         })
         .catch((error) => {
           console.warn('获取即将上映数据失败:', error);
-          dispatch({ type: 'SET_UPCOMING_RELEASES', payload: [] });
+          dispatchDeferred({ type: 'SET_UPCOMING_RELEASES', payload: [] });
         })
         .finally(() =>
-          dispatch({ type: 'SET_LOADING', payload: { upcoming: false } }),
+          dispatchDeferred({
+            type: 'SET_LOADING',
+            payload: { upcoming: false },
+          }),
         );
 
       await Promise.allSettled([
@@ -1113,428 +1196,46 @@ function HomeClient() {
             // 首页视图
             <>
               {/* Hero Banner 轮播 */}
-              {(hotMovies.length > 0 ||
-                hotTvShows.length > 0 ||
-                hotVarietyShows.length > 0 ||
-                hotShortDramas.length > 0) && (
+              {(heroItems.length > 0 ||
+                loading.movies ||
+                loading.tv ||
+                loading.variety ||
+                loading.anime) && (
                 <section className='mb-10 sm:mb-8'>
-                  <HeroBanner
-                    items={[
-                      // 豆瓣电影
-                      ...hotMovies.slice(0, 2).map((movie) => ({
-                        id: movie.id,
-                        title: movie.title,
-                        poster: movie.poster,
-                        backdrop: movie.backdrop,
-                        trailerUrl: movie.trailerUrl,
-                        description: movie.plot_summary,
-                        year: movie.year,
-                        rate: movie.rate,
-                        douban_id: Number(movie.id),
-                        type: 'movie',
-                      })),
-                      // 豆瓣电视剧
-                      ...hotTvShows.slice(0, 2).map((show) => ({
-                        id: show.id,
-                        title: show.title,
-                        poster: show.poster,
-                        backdrop: show.backdrop,
-                        trailerUrl: show.trailerUrl,
-                        description: show.plot_summary,
-                        year: show.year,
-                        rate: show.rate,
-                        douban_id: Number(show.id),
-                        type: 'tv',
-                      })),
-                      // 豆瓣综艺
-                      ...hotVarietyShows.slice(0, 1).map((show) => ({
-                        id: show.id,
-                        title: show.title,
-                        poster: show.poster,
-                        backdrop: show.backdrop,
-                        trailerUrl: show.trailerUrl,
-                        description: show.plot_summary,
-                        year: show.year,
-                        rate: show.rate,
-                        douban_id: Number(show.id),
-                        type: 'variety',
-                      })),
-                      // 豆瓣动漫
-                      ...hotAnime.slice(0, 1).map((anime) => ({
-                        id: anime.id,
-                        title: anime.title,
-                        poster: anime.poster,
-                        backdrop: anime.backdrop,
-                        trailerUrl: anime.trailerUrl,
-                        description: anime.plot_summary,
-                        year: anime.year,
-                        rate: anime.rate,
-                        douban_id: Number(anime.id),
-                        type: 'anime',
-                      })),
-                    ]}
-                    autoPlayInterval={8000}
-                    showControls={true}
-                    showIndicators={true}
-                    enableVideo={true}
-                  />
+                  {heroItems.length > 0 ? (
+                    <MemoizedHeroBanner
+                      items={heroItems}
+                      autoPlayInterval={8000}
+                      showControls={true}
+                      showIndicators={true}
+                      enableVideo={true}
+                    />
+                  ) : (
+                    <div
+                      aria-hidden='true'
+                      className='h-[50vh] w-full rounded-xl bg-gray-100/70 dark:bg-gray-900/40 sm:h-[55vh] md:h-[60vh]'
+                      data-hero-placeholder='true'
+                    />
+                  )}
                 </section>
               )}
 
               {/* 继续观看 */}
               <ContinueWatching />
 
-              {/* 即将上映 */}
-              {(() => {
-                console.log('🔍 即将上映 section 渲染检查:', {
-                  loading: loading.upcoming,
-                  upcomingReleasesCount: upcomingReleases.length,
-                });
-                return null;
-              })()}
-              {!loading.upcoming && upcomingReleases.length > 0 && (
-                <section className='mb-2 sm:mb-8'>
-                  <div className='mb-4 flex items-center justify-between'>
-                    <SectionTitle
-                      title='即将上映'
-                      icon={Calendar}
-                      iconColor='text-orange-500'
-                    />
-                    <Link
-                      href='/release-calendar'
-                      className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors'
-                    >
-                      查看更多
-                      <ChevronRight className='w-4 h-4 ml-1' />
-                    </Link>
-                  </div>
-
-                  {/* Tab 切换 */}
-                  <div className='mb-4 flex gap-2'>
-                    {[
-                      {
-                        key: 'all',
-                        label: '全部',
-                        count: upcomingReleases.length,
-                      },
-                      {
-                        key: 'movie',
-                        label: '电影',
-                        count: upcomingReleases.filter(
-                          (r) => r.type === 'movie',
-                        ).length,
-                      },
-                      {
-                        key: 'tv',
-                        label: '电视剧',
-                        count: upcomingReleases.filter((r) => r.type === 'tv')
-                          .length,
-                      },
-                    ].map(({ key, label, count }) => (
-                      <button
-                        key={key}
-                        onClick={() =>
-                          setUpcomingFilter(key as 'all' | 'movie' | 'tv')
-                        }
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                          upcomingFilter === key
-                            ? 'bg-orange-500 text-white shadow-md'
-                            : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
-                        }`}
-                      >
-                        {label}
-                        {count > 0 && (
-                          <span
-                            className={`ml-1.5 text-xs ${
-                              upcomingFilter === key
-                                ? 'text-white/80'
-                                : 'text-gray-500 dark:text-gray-400'
-                            }`}
-                          >
-                            ({count})
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-
-                  <ScrollableRow enableVirtualization={true}>
-                    {upcomingReleases
-                      .filter(
-                        (release) =>
-                          upcomingFilter === 'all' ||
-                          release.type === upcomingFilter,
-                      )
-                      .map((release, index) => {
-                        // 计算距离上映还有几天
-                        const releaseDate = new Date(release.releaseDate);
-                        const daysDiff = Math.ceil(
-                          (releaseDate.getTime() - today.getTime()) /
-                            (1000 * 60 * 60 * 24),
-                        );
-
-                        // 根据天数差异显示不同文字
-                        let remarksText;
-                        if (daysDiff < 0) {
-                          remarksText = `已上映${Math.abs(daysDiff)}天`;
-                        } else if (daysDiff === 0) {
-                          remarksText = '今日上映';
-                        } else {
-                          remarksText = `${daysDiff}天后上映`;
-                        }
-
-                        return (
-                          <div
-                            key={`${release.id}-${index}`}
-                            className='min-w-24 w-24 sm:min-w-45 sm:w-44'
-                          >
-                            <VideoCard
-                              source='upcoming_release'
-                              id={release.id}
-                              source_name='即将上映'
-                              from='douban'
-                              title={release.title}
-                              poster={
-                                release.cover || '/placeholder-poster.jpg'
-                              }
-                              year={release.releaseDate.split('-')[0]}
-                              type={release.type}
-                              remarks={remarksText}
-                              releaseDate={release.releaseDate}
-                              query={release.title}
-                              episodes={
-                                release.episodes ||
-                                (release.type === 'tv' ? undefined : 1)
-                              }
-                            />
-                          </div>
-                        );
-                      })}
-                  </ScrollableRow>
-                </section>
-              )}
-
-              {/* 热门电影 */}
-              <section className='mb-2 sm:mb-8'>
-                <div className='mb-4 flex items-center justify-between'>
-                  <SectionTitle
-                    title='热门电影'
-                    icon={Film}
-                    iconColor='text-red-500'
-                  />
-                  <Link
-                    href='/douban?type=movie'
-                    className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors'
-                  >
-                    查看更多
-                    <ChevronRight className='w-4 h-4 ml-1' />
-                  </Link>
-                </div>
-                <ScrollableRow enableVirtualization={true}>
-                  {loading.movies
-                    ? // 加载状态显示灰色占位数据
-                      Array.from({ length: 8 }).map((_, index) => (
-                        <SkeletonCard key={index} />
-                      ))
-                    : // 显示真实数据
-                      hotMovies.map((movie, index) => (
-                        <div
-                          key={index}
-                          className='min-w-24 w-24 sm:min-w-45 sm:w-44'
-                        >
-                          <VideoCard
-                            from='douban'
-                            source='douban'
-                            id={movie.id}
-                            source_name='豆瓣'
-                            title={movie.title}
-                            poster={movie.poster}
-                            douban_id={Number(movie.id)}
-                            rate={movie.rate}
-                            year={movie.year}
-                            type='movie'
-                          />
-                        </div>
-                      ))}
-                </ScrollableRow>
-              </section>
-
-              {/* 热门剧集 */}
-              <section className='mb-2 sm:mb-8'>
-                <div className='mb-4 flex items-center justify-between'>
-                  <SectionTitle
-                    title='热门剧集'
-                    icon={Tv}
-                    iconColor='text-primary-500'
-                  />
-                  <Link
-                    href='/douban?type=tv'
-                    className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors'
-                  >
-                    查看更多
-                    <ChevronRight className='w-4 h-4 ml-1' />
-                  </Link>
-                </div>
-                <ScrollableRow enableVirtualization={true}>
-                  {loading.tv
-                    ? // 加载状态显示灰色占位数据
-                      Array.from({ length: 8 }).map((_, index) => (
-                        <SkeletonCard key={index} />
-                      ))
-                    : // 显示真实数据
-                      hotTvShows.map((show, index) => (
-                        <div
-                          key={index}
-                          className='min-w-24 w-24 sm:min-w-45 sm:w-44'
-                        >
-                          <VideoCard
-                            from='douban'
-                            source='douban'
-                            id={show.id}
-                            source_name='豆瓣'
-                            title={show.title}
-                            poster={show.poster}
-                            douban_id={Number(show.id)}
-                            rate={show.rate}
-                            year={show.year}
-                            type='tv'
-                          />
-                        </div>
-                      ))}
-                </ScrollableRow>
-              </section>
-
-              {/* 每日新番放送 */}
-              <section className='mb-2 sm:mb-8'>
-                <div className='mb-4 flex items-center justify-between'>
-                  <SectionTitle
-                    title='新番放送'
-                    icon={Calendar}
-                    iconColor='text-purple-500'
-                  />
-                  <Link
-                    href='/douban?type=anime'
-                    className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors'
-                  >
-                    查看更多
-                    <ChevronRight className='w-4 h-4 ml-1' />
-                  </Link>
-                </div>
-                <ScrollableRow enableVirtualization={true}>
-                  {loading.bangumi
-                    ? // 加载状态显示灰色占位数据
-                      Array.from({ length: 8 }).map((_, index) => (
-                        <SkeletonCard key={index} />
-                      ))
-                    : // 展示当前日期的番剧
-                      todayAnimes.map((anime, index) => (
-                        <div
-                          key={`${anime.id}-${index}`}
-                          className='min-w-24 w-24 sm:min-w-45 sm:w-44'
-                        >
-                          <VideoCard
-                            from='douban'
-                            source='bangumi'
-                            id={anime.id.toString()}
-                            source_name='Bangumi'
-                            title={anime.name_cn || anime.name}
-                            poster={
-                              anime.images?.large ||
-                              anime.images?.common ||
-                              anime.images?.medium ||
-                              anime.images?.small ||
-                              anime.images?.grid ||
-                              '/placeholder-poster.jpg'
-                            }
-                            douban_id={anime.id}
-                            rate={anime.rating?.score?.toFixed(1) || ''}
-                            year={anime.air_date?.split('-')?.[0] || ''}
-                            isBangumi={true}
-                          />
-                        </div>
-                      ))}
-                </ScrollableRow>
-              </section>
-
-              {/* 热门综艺 */}
-              <section className='mb-2 sm:mb-8'>
-                <div className='mb-4 flex items-center justify-between'>
-                  <SectionTitle
-                    title='热门综艺'
-                    icon={Sparkles}
-                    iconColor='text-pink-500'
-                  />
-                  <Link
-                    href='/douban?type=show'
-                    className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors'
-                  >
-                    查看更多
-                    <ChevronRight className='w-4 h-4 ml-1' />
-                  </Link>
-                </div>
-                <ScrollableRow enableVirtualization={true}>
-                  {loading.variety
-                    ? // 加载状态显示灰色占位数据
-                      Array.from({ length: 8 }).map((_, index) => (
-                        <SkeletonCard key={index} />
-                      ))
-                    : // 显示真实数据
-                      hotVarietyShows.map((show, index) => (
-                        <div
-                          key={index}
-                          className='min-w-24 w-24 sm:min-w-45 sm:w-44'
-                        >
-                          <VideoCard
-                            from='douban'
-                            source='douban'
-                            id={show.id}
-                            source_name='豆瓣'
-                            title={show.title}
-                            poster={show.poster}
-                            douban_id={Number(show.id)}
-                            rate={show.rate}
-                            year={show.year}
-                            type='variety'
-                          />
-                        </div>
-                      ))}
-                </ScrollableRow>
-              </section>
-
-              {/* 热门短剧 */}
-              {!shortDramasError && (
-                <section className='mb-2 sm:mb-8'>
-                  <div className='mb-4 flex items-center justify-between'>
-                    <SectionTitle
-                      title='热门短剧'
-                      icon={Play}
-                      iconColor='text-orange-500'
-                    />
-                    <Link
-                      href='/shortdrama'
-                      className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors'
-                    >
-                      查看更多
-                      <ChevronRight className='w-4 h-4 ml-1' />
-                    </Link>
-                  </div>
-                  <ScrollableRow enableVirtualization={true}>
-                    {loading.shortDramas
-                      ? // 加载状态显示灰色占位数据
-                        Array.from({ length: 8 }).map((_, index) => (
-                          <SkeletonCard key={index} />
-                        ))
-                      : // 显示真实数据
-                        hotShortDramas.map((drama, index) => (
-                          <ShortDramaCard
-                            key={index}
-                            drama={drama}
-                            className='min-w-24 w-24 sm:min-w-45 sm:w-44'
-                          />
-                        ))}
-                  </ScrollableRow>
-                </section>
-              )}
+              <HomeRecommendationSections
+                hotMovies={hotMovies}
+                hotShortDramas={hotShortDramas}
+                hotTvShows={hotTvShows}
+                hotVarietyShows={hotVarietyShows}
+                loading={loading}
+                onUpcomingFilterChange={handleUpcomingFilterChange}
+                shortDramasError={shortDramasError}
+                today={today}
+                todayAnimes={todayAnimes}
+                upcomingFilter={upcomingFilter}
+                upcomingReleases={upcomingReleases}
+              />
             </>
           )}
         </div>
