@@ -2,6 +2,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { AdminConfig } from '@/lib/admin.types';
+import type { AuthInfo, AuthRole } from '@/lib/auth';
+import { generateHmacSignature } from '@/lib/auth';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { generateToken } from '@/lib/utils';
@@ -16,53 +18,24 @@ const STORAGE_TYPE =
     | 'kvrocks'
     | undefined) || 'localstorage';
 
-// 生成签名
-async function generateSignature(
-  data: string,
-  secret: string,
-): Promise<string> {
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const messageData = encoder.encode(data);
-
-  // 导入密钥
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyData,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-
-  // 生成签名
-  const signature = await crypto.subtle.sign('HMAC', key, messageData);
-
-  // 转换为十六进制字符串
-  return Array.from(new Uint8Array(signature))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
 // 生成认证Cookie（带签名）
 async function generateAuthCookie(
-  username?: string,
-  password?: string,
-  role?: 'owner' | 'admin' | 'user',
-  includePassword = false,
+  username: string,
+  role: AuthRole = 'user',
 ): Promise<string> {
-  const authData: any = { role: role || 'user' };
+  const timestamp = Date.now();
+  const authData: AuthInfo = {
+    role,
+    username,
+    timestamp,
+    loginTime: timestamp,
+  };
 
-  // 只在需要时包含 password
-  if (includePassword && password) {
-    authData.password = password;
-  }
-
-  if (username && process.env.PASSWORD) {
-    authData.username = username;
-    // 使用密码作为密钥对用户名进行签名
-    const signature = await generateSignature(username, process.env.PASSWORD);
-    authData.signature = signature;
-    authData.timestamp = Date.now(); // 添加时间戳防重放攻击
+  if (process.env.PASSWORD) {
+    authData.signature = await generateHmacSignature(
+      username,
+      process.env.PASSWORD,
+    );
   }
 
   return encodeURIComponent(JSON.stringify(authData));
@@ -189,12 +162,7 @@ export async function POST(req: NextRequest) {
         needDelay: false,
       });
 
-      const cookieValue = await generateAuthCookie(
-        username,
-        password,
-        'user',
-        false,
-      );
+      const cookieValue = await generateAuthCookie(username, 'user');
       const expires = new Date();
       expires.setDate(expires.getDate() + 7); // 7天过期
 
@@ -203,7 +171,7 @@ export async function POST(req: NextRequest) {
         expires,
         sameSite: 'lax',
         httpOnly: false,
-        secure: false,
+        secure: req.nextUrl.protocol === 'https:',
       });
 
       return response;

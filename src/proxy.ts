@@ -2,7 +2,16 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
-import { getAuthInfoFromCookie } from '@/lib/auth';
+import {
+  getAuthInfoFromCookie,
+  isValidLocalStorageSession,
+  verifyHmacSignature,
+} from '@/lib/auth';
+import {
+  LOGIN_RETURN_TO_COOKIE,
+  normalizeLoginRedirect,
+  sanitizeInternalRedirect,
+} from '@/lib/safe-redirect';
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -38,8 +47,10 @@ export async function proxy(request: NextRequest) {
 
   let response: NextResponse;
 
-  // 处理 /adult/ 路径前缀，重写为实际 API 路径
-  if (pathname.startsWith('/adult/')) {
+  if (pathname === '/login') {
+    response = handleLoginEntry(request, requestHeaders);
+  } else if (pathname.startsWith('/adult/')) {
+    // 处理 /adult/ 路径前缀，重写为实际 API 路径
     // 移除 /adult 前缀
     const newPathname = pathname.replace(/^\/adult/, '');
     // 创建新的 URL
@@ -98,8 +109,70 @@ export async function proxy(request: NextRequest) {
 
   // Set CSP header on the response
   response.headers.set('Content-Security-Policy', cspHeader);
+  response.headers.set('X-Content-Type-Options', 'nosniff');
+  response.headers.set('X-Frame-Options', 'DENY');
+  response.headers.set(
+    'Permissions-Policy',
+    'camera=(), microphone=(), geolocation=()',
+  );
+
+  if (pathname === '/login' || pathname === '/play') {
+    response.headers.set(
+      'X-Robots-Tag',
+      'noindex, nofollow, noarchive, nosnippet, noimageindex',
+    );
+    response.headers.set('Cache-Control', 'private, no-store, max-age=0');
+  }
+
+  if (pathname === '/login') {
+    response.headers.set('Referrer-Policy', 'no-referrer');
+  }
 
   return response;
+}
+
+function handleLoginEntry(
+  request: NextRequest,
+  requestHeaders: Headers,
+): NextResponse {
+  const legacyRedirect = request.nextUrl.searchParams.get('redirect');
+  if (legacyRedirect === null) {
+    return NextResponse.next({
+      request: {
+        headers: requestHeaders,
+      },
+    });
+  }
+
+  const returnTo = normalizeLoginRedirect(
+    legacyRedirect,
+    request.nextUrl.searchParams,
+  );
+  const cleanLoginUrl = new URL('/login', request.url);
+  const error = request.nextUrl.searchParams.get('error');
+  if (error) cleanLoginUrl.searchParams.set('error', error.slice(0, 200));
+
+  const response = NextResponse.redirect(cleanLoginUrl);
+  setReturnToCookie(response, request, returnTo);
+  return response;
+}
+
+function setReturnToCookie(
+  response: NextResponse,
+  request: NextRequest,
+  returnTo: string,
+): void {
+  response.cookies.set(
+    LOGIN_RETURN_TO_COOKIE,
+    sanitizeInternalRedirect(returnTo),
+    {
+      path: '/',
+      httpOnly: true,
+      secure: request.nextUrl.protocol === 'https:',
+      sameSite: 'lax',
+      maxAge: 10 * 60,
+    },
+  );
 }
 
 // 提取认证处理逻辑为单独的函数
@@ -129,7 +202,7 @@ async function handleAuthentication(
 
   // localstorage模式：在middleware中完成验证
   if (storageType === 'localstorage') {
-    if (!authInfo.password || authInfo.password !== process.env.PASSWORD) {
+    if (!(await isValidLocalStorageSession(authInfo, process.env.PASSWORD))) {
       return handleAuthFailure(request, pathname);
     }
     return (
@@ -154,7 +227,7 @@ async function handleAuthentication(
 
   // 验证签名（如果存在）
   if (authInfo.signature) {
-    const isValidSignature = await verifySignature(
+    const isValidSignature = await verifyHmacSignature(
       authInfo.username,
       authInfo.signature,
       process.env.PASSWORD || '',
@@ -179,44 +252,6 @@ async function handleAuthentication(
   return handleAuthFailure(request, pathname);
 }
 
-// 验证签名
-async function verifySignature(
-  data: string,
-  signature: string,
-  secret: string,
-): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const messageData = encoder.encode(data);
-
-  try {
-    // 导入密钥
-    const key = await crypto.subtle.importKey(
-      'raw',
-      keyData,
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['verify'],
-    );
-
-    // 将十六进制字符串转换为Uint8Array
-    const signatureBuffer = new Uint8Array(
-      signature.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || [],
-    );
-
-    // 验证签名
-    return await crypto.subtle.verify(
-      'HMAC',
-      key,
-      signatureBuffer,
-      messageData,
-    );
-  } catch (error) {
-    console.error('签名验证失败:', error);
-    return false;
-  }
-}
-
 // 处理认证失败的情况
 function handleAuthFailure(
   request: NextRequest,
@@ -227,12 +262,13 @@ function handleAuthFailure(
     return new NextResponse('Unauthorized', { status: 401 });
   }
 
-  // 否则重定向到登录页面
+  // 否则重定向到干净的登录页面，并通过 HttpOnly Cookie 保存站内回跳地址。
+  // 避免把完整播放参数暴露在登录 URL 中，也杜绝开放重定向。
   const loginUrl = new URL('/login', request.url);
-  // 保留完整的URL，包括查询参数
   const fullUrl = `${pathname}${request.nextUrl.search}`;
-  loginUrl.searchParams.set('redirect', fullUrl);
-  return NextResponse.redirect(loginUrl);
+  const response = NextResponse.redirect(loginUrl);
+  setReturnToCookie(response, request, fullUrl);
+  return response;
 }
 
 // 判断是否需要跳过认证的路径
@@ -254,6 +290,6 @@ function shouldSkipAuth(pathname: string): boolean {
 // 配置middleware匹配规则
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|login|register|oidc-register|warning|api/login|api/register|api/logout|api/cron|api/server-config|api/tvbox|api/live/merged|api/parse|api/bing-wallpaper|api/proxy/|api/telegram/|api/auth/oidc/).*)',
+    '/((?!_next/static|_next/image|favicon.ico|register|oidc-register|warning|api/login|api/register|api/logout|api/cron|api/server-config|api/tvbox|api/live/merged|api/parse|api/bing-wallpaper|api/proxy/|api/telegram/|api/auth/oidc/).*)',
   ],
 };

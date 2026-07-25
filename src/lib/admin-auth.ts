@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 
 import { AdminConfig } from '@/lib/admin.types';
-import { getAuthInfoFromCookie } from '@/lib/auth';
+import { getAuthInfoFromCookie, isValidLocalStorageSession } from '@/lib/auth';
 import { loadConfig } from '@/lib/config';
 
 export type AdminRole = 'owner' | 'admin';
@@ -33,8 +33,8 @@ export async function getAdminRoleFromRequest(
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
 
   if (storageType === 'localstorage') {
-    const password = authInfo.password;
-    if (password && password === process.env.PASSWORD) {
+    const secret = process.env.PASSWORD;
+    if (secret && (await isValidLocalStorageSession(authInfo, secret))) {
       return 'owner';
     }
     return null;
