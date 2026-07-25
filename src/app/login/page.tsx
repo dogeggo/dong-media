@@ -1,13 +1,6 @@
 'use client';
 
-import {
-  AlertCircle,
-  Lock,
-  ShieldCheck,
-  Sparkles,
-  User,
-  UserPlus,
-} from 'lucide-react';
+import { AlertCircle, Lock, Sparkles, User, UserPlus } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 
@@ -195,22 +188,6 @@ function LoginPageClient() {
           <p className='text-gray-600 dark:text-gray-400 text-xs sm:text-sm font-medium'>
             欢迎回来，请登录您的账户
           </p>
-        </div>
-
-        <div className='mb-5 sm:mb-6 rounded-xl border border-emerald-200/80 bg-emerald-50/90 p-3.5 text-left text-xs leading-relaxed text-emerald-950 shadow-sm dark:border-emerald-800/70 dark:bg-emerald-950/40 dark:text-emerald-100'>
-          <div className='mb-1.5 flex items-center gap-2 font-semibold'>
-            <ShieldCheck className='h-4 w-4 shrink-0' />
-            <span>{siteName} 私有站点安全登录</span>
-          </div>
-          <p>
-            本入口仅用于访问本站的影视信息检索、播放记录与个人设置。登录成功后只会跳转到本站内部页面。
-          </p>
-          {siteHost && (
-            <p className='mt-1.5 text-[11px] text-emerald-800 dark:text-emerald-300'>
-              请确认浏览器地址栏域名为：
-              <span className='ml-1 font-mono font-semibold'>{siteHost}</span>
-            </p>
-          )}
         </div>
 
         <form onSubmit={handleSubmit} className='space-y-4 sm:space-y-6'>

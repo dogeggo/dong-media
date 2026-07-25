@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'Dong Media 安全登录',
+  title: 'Dong Media',
   description: 'Dong Media 私有站点访问入口，仅用于本站账户认证。',
   robots: {
     index: false,
