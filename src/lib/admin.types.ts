@@ -16,9 +16,19 @@ export interface AdminConfig {
     TMDBApiKey?: string;
     TMDBLanguage?: string;
     EnableTMDBActorSearch?: boolean;
-    // 自定义去广告代码
-    CustomAdFilterCode?: string;
-    CustomAdFilterVersion?: number;
+    // 结构化去广告规则（禁止执行管理员提供的 JavaScript）
+    AdFilterConfig?: {
+      enabled: boolean;
+      version: number;
+      globalKeywords: string[];
+      removeCueBlocks: boolean;
+      removeDiscontinuity: boolean;
+      sourceRules: {
+        source: string;
+        keywords: string[];
+        durations: number[];
+      }[];
+    };
     // 默认用户组
     DefaultUserTags?: string[];
   };
@@ -100,15 +110,6 @@ export interface AdminConfig {
   VideoProxyConfig?: {
     enabled: boolean; // 是否为普通视频源启用Cloudflare Worker代理
     proxyUrl: string; // Cloudflare Worker代理地址（例如：https://corsapi.smone.workers.dev）
-  };
-  TelegramAuthConfig?: {
-    enabled: boolean; // 是否启用Telegram登录
-    botToken: string; // Telegram Bot Token
-    botUsername: string; // Telegram Bot Username
-    autoRegister: boolean; // 是否自动注册新用户
-    buttonSize: 'large' | 'medium' | 'small'; // 按钮大小
-    showAvatar: boolean; // 是否显示用户头像
-    requestWriteAccess: boolean; // 是否请求发送消息权限
   };
   // 新的多 Provider 配置
   OIDCProviders?: {

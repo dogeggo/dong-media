@@ -69,6 +69,14 @@ export function localStorageSessionPayload(
   return `localstorage:${role}:${timestamp}`;
 }
 
+export function userSessionPayload(
+  username: string,
+  role: AuthRole,
+  timestamp: number,
+): string {
+  return `user:${username}:${role}:${timestamp}`;
+}
+
 export async function generateHmacSignature(
   data: string,
   secret: string,
@@ -149,6 +157,58 @@ export async function isValidLocalStorageSession(
     signature,
     secret,
   );
+}
+
+export async function isValidUserSession(
+  authInfo: AuthInfo,
+  secret: string,
+  now = Date.now(),
+): Promise<boolean> {
+  const { username, role, signature, timestamp } = authInfo;
+  if (
+    !username ||
+    !role ||
+    !signature ||
+    !timestamp ||
+    !Number.isSafeInteger(timestamp) ||
+    timestamp <= 0
+  ) {
+    return false;
+  }
+
+  const sessionAge = now - timestamp;
+  if (
+    sessionAge < -SESSION_CLOCK_SKEW_MS ||
+    sessionAge > LOCAL_STORAGE_SESSION_MAX_AGE_MS + SESSION_CLOCK_SKEW_MS
+  ) {
+    return false;
+  }
+
+  return verifyHmacSignature(
+    userSessionPayload(username, role, timestamp),
+    signature,
+    secret,
+  );
+}
+
+export async function createUserAuthCookieValue(
+  username: string,
+  role: AuthRole,
+  secret: string,
+  timestamp = Date.now(),
+): Promise<string> {
+  const authData: AuthInfo = {
+    username,
+    role,
+    timestamp,
+    loginTime: timestamp,
+    signature: await generateHmacSignature(
+      userSessionPayload(username, role, timestamp),
+      secret,
+    ),
+  };
+
+  return encodeURIComponent(JSON.stringify(authData));
 }
 
 // 从cookie获取认证信息 (服务端使用)

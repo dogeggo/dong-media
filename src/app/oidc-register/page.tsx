@@ -58,6 +58,9 @@ export default function OIDCRegisterPage() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setError(data.error || '注册失败');
+      } else {
+        const data = await res.json().catch(() => ({}));
+        router.replace(data.redirect || '/');
       }
     } catch (_error) {
       setError('网络错误，请稍后重试');

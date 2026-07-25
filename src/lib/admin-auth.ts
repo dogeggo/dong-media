@@ -1,7 +1,11 @@
 import { NextRequest } from 'next/server';
 
 import { AdminConfig } from '@/lib/admin.types';
-import { getAuthInfoFromCookie, isValidLocalStorageSession } from '@/lib/auth';
+import {
+  getAuthInfoFromCookie,
+  isValidLocalStorageSession,
+  isValidUserSession,
+} from '@/lib/auth';
 import { loadConfig } from '@/lib/config';
 
 export type AdminRole = 'owner' | 'admin';
@@ -41,7 +45,8 @@ export async function getAdminRoleFromRequest(
   }
 
   const username = authInfo.username;
-  if (!username) {
+  const secret = process.env.PASSWORD;
+  if (!username || !secret || !(await isValidUserSession(authInfo, secret))) {
     return null;
   }
 

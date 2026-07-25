@@ -2,8 +2,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
-import { loadConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
+import { authenticateRequest } from '@/lib/request-auth';
 import { rankSearchResults } from '@/lib/search-ranking';
 import { generateSearchVariants } from '@/lib/utils';
 import { yellowWords } from '@/lib/yellow';
@@ -31,6 +31,10 @@ export async function GET(request: NextRequest) {
   const startTime = Date.now();
 
   try {
+    const auth = await authenticateRequest(request);
+    if (!auth) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     const { searchParams } = new URL(request.url);
     const sourceKey = searchParams.get('source');
     const query = searchParams.get('wd');
@@ -49,7 +53,20 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const config = await loadConfig();
+    const config = auth.config;
+    const currentUser = config.UserConfig.Users.find(
+      (candidate) => candidate.username === auth.username,
+    );
+    if (
+      auth.via === 'tvbox-token' &&
+      currentUser?.tvboxEnabledSources?.length &&
+      !currentUser.tvboxEnabledSources.includes(sourceKey)
+    ) {
+      return NextResponse.json(
+        { code: 403, msg: '该 Token 无权访问此视频源', list: [] },
+        { status: 403 },
+      );
+    }
     // const shouldFilter = filterParam === 'on' || filterParam === 'enable';
     const shouldFilter = true;
 
@@ -198,10 +215,9 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(response, {
       headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Cache-Control': 'public, max-age=300, s-maxage=300', // 5分钟缓存
+        'Cache-Control': 'private, max-age=300',
+        'X-Content-Type-Options': 'nosniff',
+        'X-Robots-Tag': 'noindex, nofollow, noarchive',
         'X-Processing-Time': `${processingTime}ms`,
         'X-Result-Count': `${results.length}`,
         'X-Filter-Applied': shouldFilter ? 'true' : 'false',
@@ -220,17 +236,8 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// CORS 预检请求
 export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 204,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-      'Access-Control-Max-Age': '86400',
-    },
-  });
+  return new NextResponse(null, { status: 405 });
 }
 
 /**

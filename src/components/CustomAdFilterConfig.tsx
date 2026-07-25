@@ -1,331 +1,265 @@
 'use client';
 
-import { AlertCircle, CheckCircle, Code, Info } from 'lucide-react';
+import { AlertCircle, CheckCircle, Filter, Info } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
-import { AdminConfig } from '@/lib/admin.types';
+import {
+  type AdFilterConfig,
+  type AdFilterSourceRule,
+  DEFAULT_AD_FILTER_CONFIG,
+  normalizeAdFilterConfig,
+} from '@/lib/ad-filter';
+import type { AdminConfig } from '@/lib/admin.types';
 
 interface CustomAdFilterConfigProps {
   config: AdminConfig | null;
   refreshConfig: () => Promise<void>;
 }
 
-const CustomAdFilterConfig = ({
+function rulesToText(rules: AdFilterSourceRule[]) {
+  return JSON.stringify(rules, null, 2);
+}
+
+export default function CustomAdFilterConfig({
   config,
   refreshConfig,
-}: CustomAdFilterConfigProps) => {
+}: CustomAdFilterConfigProps) {
+  const [settings, setSettings] = useState<AdFilterConfig>({
+    ...DEFAULT_AD_FILTER_CONFIG,
+  });
+  const [sourceRulesText, setSourceRulesText] = useState('[]');
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState<{
     type: 'success' | 'error';
     text: string;
   } | null>(null);
 
-  const [filterSettings, setFilterSettings] = useState({
-    customAdFilterCode: '',
-    customAdFilterVersion: 1,
-  });
-
-  // 从config加载设置
   useEffect(() => {
-    if (config?.SiteConfig) {
-      setFilterSettings({
-        customAdFilterCode: config.SiteConfig.CustomAdFilterCode || '',
-        customAdFilterVersion: config.SiteConfig.CustomAdFilterVersion || 1,
-      });
-    }
+    const normalized = normalizeAdFilterConfig(
+      config?.SiteConfig.AdFilterConfig,
+    );
+    setSettings(normalized);
+    setSourceRulesText(rulesToText(normalized.sourceRules));
   }, [config]);
 
-  // 显示消息
   const showMessage = (type: 'success' | 'error', text: string) => {
     setMessage({ type, text });
     setTimeout(() => setMessage(null), 3000);
   };
 
-  // 保存配置
   const handleSave = async () => {
     setIsLoading(true);
     try {
-      if (!config) {
-        throw new Error('配置未加载');
+      if (!config) throw new Error('配置未加载');
+
+      let sourceRules: unknown;
+      try {
+        sourceRules = JSON.parse(sourceRulesText);
+      } catch {
+        throw new Error('源专属规则不是有效的 JSON');
+      }
+      if (!Array.isArray(sourceRules)) {
+        throw new Error('源专属规则必须是 JSON 数组');
       }
 
-      // 合并完整的 AdminConfig（参考 MoonTVPlus）
-      const updatedConfig = {
-        ...config,
-        SiteConfig: {
-          ...config.SiteConfig,
-          CustomAdFilterCode: filterSettings.customAdFilterCode,
-          CustomAdFilterVersion: filterSettings.customAdFilterVersion,
-        },
-      };
-
-      const response = await fetch('/api/admin/config', {
-        method: 'POST', // 改为 POST
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedConfig), // 发送完整配置
+      const normalized = normalizeAdFilterConfig({
+        ...settings,
+        sourceRules,
       });
-
+      const response = await fetch('/api/admin/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...config,
+          SiteConfig: {
+            ...config.SiteConfig,
+            AdFilterConfig: normalized,
+          },
+        }),
+      });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || '保存失败');
       }
 
-      showMessage('success', '自定义去广告配置已保存');
+      setSettings(normalized);
+      setSourceRulesText(rulesToText(normalized.sourceRules));
+      showMessage('success', '结构化去广告规则已保存');
       await refreshConfig();
-    } catch (error: any) {
-      showMessage('error', error.message || '保存失败');
+    } catch (error) {
+      showMessage('error', error instanceof Error ? error.message : '保存失败');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // 重置输入框（不保存）
-  const handleReset = () => {
-    setFilterSettings({
-      customAdFilterCode: '',
-      customAdFilterVersion: 1,
-    });
+  const restoreDefaults = () => {
+    setSettings({ ...DEFAULT_AD_FILTER_CONFIG });
+    setSourceRulesText('[]');
   };
-
-  // 恢复默认并保存到数据库
-  const handleRestoreDefault = async () => {
-    setIsLoading(true);
-    try {
-      if (!config) {
-        throw new Error('配置未加载');
-      }
-
-      // 合并完整的 AdminConfig，重置自定义去广告配置
-      const updatedConfig = {
-        ...config,
-        SiteConfig: {
-          ...config.SiteConfig,
-          CustomAdFilterCode: '',
-          CustomAdFilterVersion: 1,
-        },
-      };
-
-      const response = await fetch('/api/admin/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedConfig),
-      });
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.error || '恢复默认失败');
-      }
-
-      setFilterSettings({
-        customAdFilterCode: '',
-        customAdFilterVersion: 1,
-      });
-
-      showMessage('success', '已恢复为默认配置');
-      await refreshConfig();
-    } catch (error: any) {
-      showMessage('error', error.message || '恢复默认失败');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 默认示例代码
-  const defaultExample = `// 自定义去广告函数
-// 参数: type (播放源key), m3u8Content (m3u8文件内容)
-// 返回: 过滤后的m3u8内容
-
-function filterAdsFromM3U8(type, m3u8Content) {
-  if (!m3u8Content) return '';
-
-  const lines = m3u8Content.split('\\n');
-  const filteredLines = [];
-  let inAdBlock = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // 检测广告开始标记
-    if (line.includes('#EXT-X-CUE-OUT') ||
-        line.includes('#EXT-X-DISCONTINUITY')) {
-      inAdBlock = true;
-      continue;
-    }
-
-    // 检测广告结束标记
-    if (line.includes('#EXT-X-CUE-IN')) {
-      inAdBlock = false;
-      continue;
-    }
-
-    // 跳过广告区块内容
-    if (inAdBlock) {
-      continue;
-    }
-
-    // 针对特定源的自定义规则
-    if (type === 'ruyi') {
-      // 过滤如意源特定时长的广告片段
-      if (line.includes('EXTINF:5.640000') ||
-          line.includes('EXTINF:2.960000')) {
-        continue;
-      }
-    }
-
-    filteredLines.push(line);
-  }
-
-  return filteredLines.join('\\n');
-}`;
 
   return (
     <div className='space-y-6'>
-      {/* 标题和说明 */}
       <div className='flex items-start gap-3'>
-        <Code className='w-6 h-6 text-purple-500 shrink-0 mt-1' />
-        <div className='flex-1'>
+        <Filter className='mt-1 h-6 w-6 shrink-0 text-purple-500' />
+        <div>
           <h3 className='text-lg font-semibold text-gray-900 dark:text-gray-100'>
-            自定义去广告代码
+            结构化去广告规则
           </h3>
-          <p className='text-sm text-gray-600 dark:text-gray-400 mt-1'>
-            编写自定义 JavaScript 代码来实现更强力的去广告功能
+          <p className='mt-1 text-sm text-gray-600 dark:text-gray-400'>
+            使用关键词、广告标记和片段时长过滤 M3U8，不执行任何自定义
+            JavaScript。
           </p>
         </div>
       </div>
 
-      {/* 信息提示 */}
-      <div className='bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800 rounded-lg p-4'>
-        <div className='flex items-start gap-3'>
-          <Info className='w-5 h-5 text-primary-600 dark:text-primary-400 shrink-0 mt-0.5' />
-          <div className='text-sm text-primary-800 dark:text-primary-200'>
-            <p className='font-medium mb-2'>使用说明：</p>
-            <ul className='space-y-1 list-disc list-inside'>
-              <li>
-                函数名必须为{' '}
-                <code className='px-1 py-0.5 bg-primary-100 dark:bg-primary-800 rounded'>
-                  filterAdsFromM3U8
-                </code>
-              </li>
-              <li>
-                接收两个参数：
-                <code className='px-1 py-0.5 bg-primary-100 dark:bg-primary-800 rounded'>
-                  type
-                </code>
-                （播放源key）和{' '}
-                <code className='px-1 py-0.5 bg-primary-100 dark:bg-primary-800 rounded'>
-                  m3u8Content
-                </code>
-                （m3u8内容）
-              </li>
-              <li>必须返回过滤后的 m3u8 内容字符串</li>
-              <li>如果代码执行失败，将自动降级使用默认去广告规则</li>
-              <li>修改代码后记得更新版本号，让浏览器刷新缓存</li>
-            </ul>
-          </div>
+      <div className='rounded-lg border border-primary-200 bg-primary-50 p-4 dark:border-primary-800 dark:bg-primary-900/20'>
+        <div className='flex items-start gap-3 text-sm text-primary-800 dark:text-primary-200'>
+          <Info className='mt-0.5 h-5 w-5 shrink-0' />
+          <p>
+            全局关键词会匹配媒体片段 URL；源专属规则可以按源 key
+            添加关键词或广告片段时长。所有输入仅作为数据解析，不会作为代码运行。
+          </p>
         </div>
       </div>
 
-      {/* 版本号 */}
+      <label className='flex items-center gap-3'>
+        <input
+          type='checkbox'
+          checked={settings.enabled}
+          onChange={(event) =>
+            setSettings({ ...settings, enabled: event.target.checked })
+          }
+          className='h-4 w-4 rounded border-gray-300 text-purple-600'
+        />
+        <span className='text-sm font-medium text-gray-800 dark:text-gray-200'>
+          启用 M3U8 去广告
+        </span>
+      </label>
+
+      <div className='grid gap-4 md:grid-cols-2'>
+        <label className='flex items-center gap-3 rounded-lg border border-gray-200 p-3 dark:border-gray-700'>
+          <input
+            type='checkbox'
+            checked={settings.removeCueBlocks}
+            onChange={(event) =>
+              setSettings({
+                ...settings,
+                removeCueBlocks: event.target.checked,
+              })
+            }
+            className='h-4 w-4 rounded border-gray-300 text-purple-600'
+          />
+          <span className='text-sm text-gray-700 dark:text-gray-300'>
+            移除 CUE-OUT/CUE-IN 广告区块
+          </span>
+        </label>
+        <label className='flex items-center gap-3 rounded-lg border border-gray-200 p-3 dark:border-gray-700'>
+          <input
+            type='checkbox'
+            checked={settings.removeDiscontinuity}
+            onChange={(event) =>
+              setSettings({
+                ...settings,
+                removeDiscontinuity: event.target.checked,
+              })
+            }
+            className='h-4 w-4 rounded border-gray-300 text-purple-600'
+          />
+          <span className='text-sm text-gray-700 dark:text-gray-300'>
+            移除 EXT-X-DISCONTINUITY 标记
+          </span>
+        </label>
+      </div>
+
       <div>
-        <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
-          代码版本号
+        <label className='mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300'>
+          全局广告关键词（每行一个）
+        </label>
+        <textarea
+          value={settings.globalKeywords.join('\n')}
+          onChange={(event) =>
+            setSettings({
+              ...settings,
+              globalKeywords: event.target.value
+                .split('\n')
+                .map((item) => item.trim())
+                .filter(Boolean),
+            })
+          }
+          className='h-48 w-full resize-y rounded-lg border border-gray-300 bg-white px-4 py-3 font-mono text-sm text-gray-900 focus:border-transparent focus:ring-2 focus:ring-purple-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100'
+        />
+      </div>
+
+      <div>
+        <label className='mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300'>
+          源专属规则（JSON 数组）
+        </label>
+        <textarea
+          value={sourceRulesText}
+          onChange={(event) => setSourceRulesText(event.target.value)}
+          className='h-64 w-full resize-y rounded-lg border border-gray-300 bg-white px-4 py-3 font-mono text-sm text-gray-900 focus:border-transparent focus:ring-2 focus:ring-purple-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100'
+          spellCheck={false}
+        />
+        <p className='mt-2 text-xs text-gray-500 dark:text-gray-400'>
+          示例：
+          <code className='ml-1'>
+            {`[{"source":"ruyi","keywords":["/promo/"],"durations":[5.64,2.96]}]`}
+          </code>
+        </p>
+      </div>
+
+      <div>
+        <label className='mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300'>
+          规则版本号
         </label>
         <input
           type='number'
           min='1'
-          value={filterSettings.customAdFilterVersion}
-          onChange={(e) =>
-            setFilterSettings({
-              ...filterSettings,
-              customAdFilterVersion: parseInt(e.target.value) || 1,
+          value={settings.version}
+          onChange={(event) =>
+            setSettings({
+              ...settings,
+              version: Number.parseInt(event.target.value, 10) || 1,
             })
           }
-          className='w-32 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-purple-500 focus:border-transparent'
-          placeholder='1'
+          className='w-32 rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100'
         />
-        <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
-          每次修改代码后建议递增版本号
-        </p>
       </div>
 
-      {/* 代码编辑器 */}
-      <div>
-        <div className='flex items-center justify-between mb-2'>
-          <label className='block text-sm font-medium text-gray-700 dark:text-gray-300'>
-            自定义代码
-          </label>
-          <button
-            onClick={() =>
-              setFilterSettings({
-                ...filterSettings,
-                customAdFilterCode: defaultExample,
-              })
-            }
-            className='text-xs text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300'
-          >
-            载入示例代码
-          </button>
-        </div>
-        <textarea
-          value={filterSettings.customAdFilterCode}
-          onChange={(e) =>
-            setFilterSettings({
-              ...filterSettings,
-              customAdFilterCode: e.target.value,
-            })
-          }
-          className='w-full h-96 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 font-mono text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none'
-          placeholder={defaultExample}
-        />
-        <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
-          支持纯 JavaScript 代码，不支持 TypeScript 类型注解
-        </p>
-      </div>
-
-      {/* 消息提示 */}
       {message && (
         <div
-          className={`flex items-center gap-2 p-4 rounded-lg ${
+          className={`flex items-center gap-2 rounded-lg border p-4 ${
             message.type === 'success'
-              ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-800 dark:text-primary-200 border border-primary-200 dark:border-primary-800'
-              : 'bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800'
+              ? 'border-primary-200 bg-primary-50 text-primary-800 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-200'
+              : 'border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/20 dark:text-red-200'
           }`}
         >
           {message.type === 'success' ? (
-            <CheckCircle className='w-5 h-5 shrink-0' />
+            <CheckCircle className='h-5 w-5 shrink-0' />
           ) : (
-            <AlertCircle className='w-5 h-5 shrink-0' />
+            <AlertCircle className='h-5 w-5 shrink-0' />
           )}
           <span className='text-sm'>{message.text}</span>
         </div>
       )}
 
-      {/* 操作按钮 */}
-      <div className='flex gap-3 pt-4 border-t border-gray-200 dark:border-gray-700'>
+      <div className='flex gap-3 border-t border-gray-200 pt-4 dark:border-gray-700'>
         <button
           onClick={handleSave}
           disabled={isLoading}
-          className='px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-400 text-white rounded-lg font-medium transition-colors'
+          className='rounded-lg bg-purple-600 px-4 py-2 font-medium text-white transition-colors hover:bg-purple-700 disabled:bg-purple-400'
         >
           {isLoading ? '保存中...' : '保存配置'}
         </button>
         <button
-          onClick={handleReset}
+          onClick={restoreDefaults}
           disabled={isLoading}
-          className='px-4 py-2 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-colors'
+          className='rounded-lg bg-gray-600 px-4 py-2 font-medium text-white transition-colors hover:bg-gray-700 disabled:bg-gray-400'
         >
-          重置
-        </button>
-        <button
-          onClick={handleRestoreDefault}
-          disabled={isLoading}
-          className='px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-orange-400 text-white rounded-lg font-medium transition-colors'
-        >
-          {isLoading ? '恢复中...' : '恢复默认'}
+          恢复默认值
         </button>
       </div>
     </div>
   );
-};
-
-export default CustomAdFilterConfig;
+}

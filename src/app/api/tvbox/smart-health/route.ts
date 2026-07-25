@@ -2,7 +2,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { detectNetworkEnvironment } from '@/lib/networkDetection';
-import { getSpiderJar, getSpiderStatus } from '@/lib/spiderJar';
+import { safeFetch } from '@/lib/safe-upstream-url';
+import { getCandidates, getSpiderJar, getSpiderStatus } from '@/lib/spiderJar';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,8 +30,10 @@ async function testUrlReachability(
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    const response = await fetch(url, {
+    const response = await safeFetch(url, {
       method: 'HEAD',
+      allowedHosts: ['raw.githubusercontent.com'],
+      maxRedirects: 2,
       signal: controller.signal,
       headers: {
         'User-Agent': 'LunaTV-HealthCheck/1.0',
@@ -80,21 +83,7 @@ function generateRecommendations(
   if (networkEnv.isDomestic) {
     recommendations.push('🏠 检测到国内网络环境，已优化JAR源选择策略');
 
-    const successfulDomesticSources = testResults.filter(
-      (r) =>
-        r.success &&
-        (r.url.includes('iqiq.io') || r.url.includes('cors.isteed.cc')),
-    );
-
-    if (successfulDomesticSources.length === 0) {
-      recommendations.push(
-        '⚠️ 国内优化源不可用，建议检查网络连接或尝试使用代理',
-      );
-    } else {
-      recommendations.push(
-        `✅ 找到 ${successfulDomesticSources.length} 个国内可用源，加载速度应该较快`,
-      );
-    }
+    recommendations.push('固定版本 JAR 仅使用经过 SHA-256 校验的官方源');
   } else {
     recommendations.push('🌍 检测到国际网络环境，已启用GitHub直连');
 
@@ -158,13 +147,7 @@ export async function GET(request: NextRequest) {
     const freshSpider = await getSpiderJar(true);
 
     // 测试关键源的可达性（使用实际验证过的源）
-    const testSources = [
-      'https://raw.iqiq.io/FongMi/CatVodSpider/main/jar/custom_spider.jar',
-      'https://raw.githubusercontent.com/FongMi/CatVodSpider/main/jar/custom_spider.jar',
-      'https://raw.githubusercontent.com/qlql765/CatVodTVSpider-by-zhixc/main/jar/custom_spider.jar',
-      'https://raw.githubusercontent.com/gaotianliuyun/gao/master/jar/custom_spider.jar',
-      'https://cors.isteed.cc/github.com/FongMi/CatVodSpider/raw/main/jar/custom_spider.jar',
-    ];
+    const testSources = getCandidates();
 
     // 并发测试多个源的可达性
     const reachabilityTests = await Promise.allSettled(

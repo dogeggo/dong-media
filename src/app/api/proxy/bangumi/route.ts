@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { getCache, setCache } from '@/lib/cache';
 import { getCacheTime } from '@/lib/config';
+import { authenticateRequest } from '@/lib/request-auth';
+import { safeFetch } from '@/lib/safe-upstream-url';
 import { processImageUrl } from '@/lib/utils';
 
 /**
@@ -13,12 +15,27 @@ import { processImageUrl } from '@/lib/utils';
  * GET /api/proxy/bangumi?path=v0/subjects/12345
  */
 export async function GET(request: NextRequest) {
+  if (!(await authenticateRequest(request))) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
   const path = searchParams.get('path');
 
   if (!path) {
     return NextResponse.json(
       { error: 'Missing path parameter' },
+      { status: 400 },
+    );
+  }
+
+  if (
+    path.includes('..') ||
+    path.startsWith('/') ||
+    !/^[a-zA-Z0-9_/?=&.-]+$/.test(path)
+  ) {
+    return NextResponse.json(
+      { error: 'Invalid path parameter' },
       { status: 400 },
     );
   }
@@ -39,7 +56,9 @@ export async function GET(request: NextRequest) {
   try {
     const apiUrl = `https://api.bgm.tv/${path}`;
 
-    const response = await fetch(apiUrl, {
+    const response = await safeFetch(apiUrl, {
+      allowedHosts: ['api.bgm.tv'],
+      maxRedirects: 0,
       headers: {
         Accept: 'application/json',
       },
@@ -92,7 +111,8 @@ export async function GET(request: NextRequest) {
     await setCache(cacheKey, processedData, cacheTime);
     return NextResponse.json(processedData, {
       headers: {
-        'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
+        'Cache-Control': `private, max-age=${cacheTime}`,
+        'X-Content-Type-Options': 'nosniff',
       },
     });
   } catch (error) {

@@ -1,139 +1,115 @@
-/* eslint-disable no-console */
 import { NextRequest, NextResponse } from 'next/server';
+import { createHash, randomBytes } from 'node:crypto';
 
 import { loadConfig } from '@/lib/config';
+import { parseSafeHttpUrl } from '@/lib/safe-upstream-url';
+import { sealSession } from '@/lib/sealed-session';
+import { getSiteOrigin } from '@/lib/site-origin';
 
 export const runtime = 'nodejs';
 
+function randomBase64Url(bytes = 32) {
+  return randomBytes(bytes).toString('base64url');
+}
+
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const providerId = searchParams.get('provider') || 'default'; // 从 URL 获取 provider ID
-
+    const providerId =
+      request.nextUrl.searchParams.get('provider') || 'default';
     const config = await loadConfig();
+    const provider =
+      providerId === 'default'
+        ? config.OIDCProviders?.find((candidate) => candidate.enabled)
+        : config.OIDCProviders?.find(
+            (candidate) => candidate.id === providerId && candidate.enabled,
+          );
 
-    console.log('[OIDC Login] Provider ID requested:', providerId);
-
-    // 优先使用新的多 Provider 配置
-    let oidcConfig = null;
-
-    if (config.OIDCProviders && config.OIDCProviders.length > 0) {
-      // 查找指定的 Provider
-      if (providerId === 'default') {
-        // 如果没有指定，使用第一个启用的 Provider
-        oidcConfig = config.OIDCProviders.find((p) => p.enabled);
-      } else {
-        // 查找指定 ID 的 Provider
-        oidcConfig = config.OIDCProviders.find(
-          (p) => p.id === providerId && p.enabled,
-        );
-      }
-    }
-
-    // 检查是否启用OIDC登录
-    if (!oidcConfig || !oidcConfig.enabled) {
-      console.log(
-        '[OIDC Login] ERROR: Provider not found or not enabled. oidcConfig:',
-        oidcConfig,
-      );
-
+    if (!provider) {
       return NextResponse.json(
-        { error: 'OIDC登录未启用或找不到指定的 Provider' },
+        { error: 'OIDC Provider 未启用' },
         { status: 403 },
       );
     }
-
-    // 检查OIDC配置
-    if (!oidcConfig.authorizationEndpoint || !oidcConfig.clientId) {
+    if (!provider.authorizationEndpoint || !provider.clientId) {
       return NextResponse.json(
-        { error: 'OIDC配置不完整，请配置Authorization Endpoint和Client ID' },
+        { error: 'OIDC Provider 配置不完整' },
         { status: 500 },
       );
     }
 
-    // 生成state参数用于防止CSRF攻击
-    const state = crypto.randomUUID();
-
-    // 使用环境变量SITE_BASE，或从请求头获取真实的origin
-    let origin: string;
-    if (process.env.SITE_BASE) {
-      // 1. 优先使用环境变量
-      origin = process.env.SITE_BASE;
-    } else if (request.headers.get('x-forwarded-host')) {
-      // 2. 使用反向代理的域名（生产环境）
-      const proto = request.headers.get('x-forwarded-proto') || 'https';
-      const host = request.headers.get('x-forwarded-host');
-      origin = `${proto}://${host}`;
-    } else {
-      // 3. 使用请求的 origin（本地开发）
-      origin = request.nextUrl.origin;
-      // 本地开发：将 0.0.0.0 替换为 localhost（OAuth 提供商不接受 0.0.0.0）
-      origin = origin.replace('://0.0.0.0:', '://localhost:');
+    const secret = process.env.PASSWORD;
+    if (!secret) {
+      return NextResponse.json(
+        { error: '服务器认证密钥未配置' },
+        { status: 500 },
+      );
     }
 
+    const origin = getSiteOrigin(request);
     const redirectUri = `${origin}/api/auth/oidc/callback`;
+    const state = randomBase64Url();
+    const nonce = randomBase64Url();
+    const codeVerifier = randomBase64Url(48);
+    const codeChallenge = createHash('sha256')
+      .update(codeVerifier)
+      .digest('base64url');
+    const authUrl = parseSafeHttpUrl(provider.authorizationEndpoint);
 
-    // 构建授权URL
-    const authUrl = new URL(oidcConfig.authorizationEndpoint);
-
-    // 微信使用 appid 而不是 client_id
-    if (providerId === 'wechat') {
-      authUrl.searchParams.set('appid', oidcConfig.clientId);
-      authUrl.searchParams.set('redirect_uri', redirectUri);
-      authUrl.searchParams.set('response_type', 'code');
-      authUrl.searchParams.set('scope', 'snsapi_login'); // 微信网站应用使用 snsapi_login
-      authUrl.searchParams.set('state', state);
-    } else if (providerId === 'apple') {
-      // Apple Sign In 参数
-      authUrl.searchParams.set('client_id', oidcConfig.clientId);
-      authUrl.searchParams.set('redirect_uri', redirectUri);
-      authUrl.searchParams.set('response_type', 'code');
-      authUrl.searchParams.set('scope', 'name email'); // Apple 使用 name email
-      authUrl.searchParams.set('response_mode', 'form_post'); // Apple 推荐使用 form_post
-      authUrl.searchParams.set('state', state);
-    } else if (providerId === 'facebook') {
-      // Facebook OAuth 参数
-      authUrl.searchParams.set('client_id', oidcConfig.clientId);
-      authUrl.searchParams.set('redirect_uri', redirectUri);
-      authUrl.searchParams.set('response_type', 'code');
-      authUrl.searchParams.set('scope', 'public_profile email'); // Facebook 使用 public_profile email
-      authUrl.searchParams.set('state', state);
-    } else if (providerId === 'github') {
-      // GitHub OAuth 参数（不支持 openid scope）
-      authUrl.searchParams.set('client_id', oidcConfig.clientId);
-      authUrl.searchParams.set('redirect_uri', redirectUri);
-      authUrl.searchParams.set('response_type', 'code');
-      authUrl.searchParams.set('scope', 'read:user user:email'); // GitHub 使用 read:user user:email
-      authUrl.searchParams.set('state', state);
+    if (provider.id === 'wechat') {
+      authUrl.searchParams.set('appid', provider.clientId);
+      authUrl.searchParams.set('scope', 'snsapi_login');
     } else {
-      // 标准 OIDC 参数
-      authUrl.searchParams.set('client_id', oidcConfig.clientId);
-      authUrl.searchParams.set('redirect_uri', redirectUri);
-      authUrl.searchParams.set('response_type', 'code');
-      authUrl.searchParams.set('scope', 'openid profile email');
-      authUrl.searchParams.set('state', state);
+      authUrl.searchParams.set('client_id', provider.clientId);
+      const scope =
+        provider.id === 'github'
+          ? 'read:user user:email'
+          : provider.id === 'facebook'
+            ? 'public_profile email'
+            : provider.id === 'apple'
+              ? 'name email'
+              : 'openid profile email';
+      authUrl.searchParams.set('scope', scope);
+    }
+    authUrl.searchParams.set('redirect_uri', redirectUri);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('state', state);
+
+    if (provider.id !== 'wechat') {
+      authUrl.searchParams.set('code_challenge', codeChallenge);
+      authUrl.searchParams.set('code_challenge_method', 'S256');
+    }
+    if (!['facebook', 'github', 'wechat'].includes(provider.id)) {
+      authUrl.searchParams.set('nonce', nonce);
+    }
+    if (provider.id === 'apple') {
+      authUrl.searchParams.set('response_mode', 'form_post');
     }
 
-    // 将state和provider ID存储到cookie中
     const response = NextResponse.redirect(authUrl);
-
-    // 存储 state 和 provider ID
-    const sessionData = JSON.stringify({
-      state,
-      providerId: (oidcConfig as any).id || providerId, // 存储 provider ID 用于 callback
-    });
-
-    response.cookies.set('oidc_state', sessionData, {
-      path: '/',
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 600, // 10分钟
-    });
-
+    response.cookies.set(
+      'oidc_state',
+      sealSession(
+        {
+          state,
+          nonce,
+          codeVerifier,
+          providerId: provider.id,
+          origin,
+          timestamp: Date.now(),
+        },
+        'oidc-state',
+        secret,
+      ),
+      {
+        path: '/',
+        httpOnly: true,
+        secure: origin.startsWith('https://'),
+        sameSite: provider.id === 'apple' ? 'none' : 'lax',
+        maxAge: 600,
+      },
+    );
     return response;
-  } catch (error) {
-    console.error('OIDC登录发起失败:', error);
-    return NextResponse.json({ error: '服务器错误' }, { status: 500 });
+  } catch {
+    return NextResponse.json({ error: 'OIDC 登录发起失败' }, { status: 500 });
   }
 }

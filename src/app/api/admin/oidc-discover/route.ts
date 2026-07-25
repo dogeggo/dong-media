@@ -1,7 +1,11 @@
-/* eslint-disable no-console */
 import { NextRequest, NextResponse } from 'next/server';
 
-import { getAuthInfoFromCookie } from '@/lib/auth';
+import { ensureAdmin } from '@/lib/admin-auth';
+import {
+  parseSafeHttpUrl,
+  safeFetch,
+  UnsafeUpstreamUrlError,
+} from '@/lib/safe-upstream-url';
 
 export const runtime = 'nodejs';
 
@@ -17,10 +21,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const authInfo = getAuthInfoFromCookie(request);
-    if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    await ensureAdmin(request);
 
     const { issuerUrl } = await request.json();
 
@@ -31,14 +32,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 构建well-known URL
-    const wellKnownUrl = `${issuerUrl}/.well-known/openid-configuration`;
-
-    console.log('正在获取OIDC配置:', wellKnownUrl);
+    const issuer = parseSafeHttpUrl(issuerUrl);
+    if (process.env.NODE_ENV === 'production' && issuer.protocol !== 'https:') {
+      return NextResponse.json(
+        { error: '生产环境 OIDC Issuer 必须使用 HTTPS' },
+        { status: 400 },
+      );
+    }
+    const wellKnownUrl = `${issuer.toString().replace(/\/$/, '')}/.well-known/openid-configuration`;
 
     // 通过后端获取配置，避免CORS问题
-    const response = await fetch(wellKnownUrl, {
+    const response = await safeFetch(wellKnownUrl, {
       method: 'GET',
+      maxRedirects: 2,
       headers: {
         Accept: 'application/json',
       },
@@ -47,7 +53,6 @@ export async function POST(request: NextRequest) {
     });
 
     if (!response.ok) {
-      console.error('获取OIDC配置失败:', response.status, response.statusText);
       return NextResponse.json(
         {
           error: `无法获取OIDC配置: ${response.status} ${response.statusText}`,
@@ -56,7 +61,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const data = await response.json();
+    const responseText = await response.text();
+    if (Buffer.byteLength(responseText) > 1024 * 1024) {
+      return NextResponse.json({ error: 'OIDC配置响应过大' }, { status: 400 });
+    }
+    const data = JSON.parse(responseText);
 
     // 验证返回的数据包含必需的端点
     // 注意：userinfo_endpoint 对某些提供商（如 Apple）是可选的
@@ -68,6 +77,23 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
+    if (
+      typeof data.issuer !== 'string' ||
+      data.issuer.replace(/\/$/, '') !== issuer.toString().replace(/\/$/, '')
+    ) {
+      return NextResponse.json(
+        { error: 'OIDC发现结果的 issuer 与请求不一致' },
+        { status: 400 },
+      );
+    }
+    for (const endpoint of [
+      data.authorization_endpoint,
+      data.token_endpoint,
+      data.userinfo_endpoint,
+      data.jwks_uri,
+    ]) {
+      if (endpoint) parseSafeHttpUrl(endpoint);
+    }
 
     // 返回端点配置
     return NextResponse.json({
@@ -78,9 +104,13 @@ export async function POST(request: NextRequest) {
       issuer: data.issuer,
     });
   } catch (error) {
-    console.error('OIDC自动发现失败:', error);
-
     if (error instanceof Error) {
+      if (error.message === 'UNAUTHORIZED') {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      }
+      if (error instanceof UnsafeUpstreamUrlError) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
       if (error.name === 'AbortError') {
         return NextResponse.json(
           { error: '请求超时，请检查Issuer URL是否正确' },
@@ -88,7 +118,7 @@ export async function POST(request: NextRequest) {
         );
       }
       return NextResponse.json(
-        { error: `获取配置失败: ${error.message}` },
+        { error: '获取配置失败，请检查 Issuer URL' },
         { status: 500 },
       );
     }

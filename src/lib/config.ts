@@ -4,6 +4,7 @@ import { unstable_noStore } from 'next/cache';
 
 import { db } from '@/lib/db';
 
+import { normalizeAdFilterConfig } from './ad-filter';
 import { AdminConfig } from './admin.types';
 import { DEFAULT_USER_AGENT } from './user-agent';
 
@@ -330,6 +331,29 @@ export async function configSelfCheck(
   adminConfig: AdminConfig,
 ): Promise<AdminConfig> {
   let hasChanges = false;
+
+  // 清除已移除的认证和可执行脚本配置，部署后首次加载即从持久化配置删除。
+  const runtimeConfig = adminConfig as unknown as Record<string, unknown>;
+  if ('TelegramAuthConfig' in runtimeConfig) {
+    delete runtimeConfig.TelegramAuthConfig;
+    hasChanges = true;
+  }
+  const siteConfig = adminConfig.SiteConfig as unknown as Record<
+    string,
+    unknown
+  >;
+  if ('CustomAdFilterCode' in siteConfig) {
+    delete siteConfig.CustomAdFilterCode;
+    hasChanges = true;
+  }
+  if ('CustomAdFilterVersion' in siteConfig) {
+    delete siteConfig.CustomAdFilterVersion;
+    hasChanges = true;
+  }
+  if (!adminConfig.SiteConfig.AdFilterConfig) hasChanges = true;
+  adminConfig.SiteConfig.AdFilterConfig = normalizeAdFilterConfig(
+    adminConfig.SiteConfig.AdFilterConfig,
+  );
 
   // 确保必要的属性存在和初始化
   if (!adminConfig.UserConfig) {

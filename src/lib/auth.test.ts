@@ -6,7 +6,9 @@ import {
   generateHmacSignature,
   getAuthInfoFromCookie,
   isValidLocalStorageSession,
+  isValidUserSession,
   localStorageSessionPayload,
+  userSessionPayload,
 } from './auth.ts';
 
 const secret = 'test-session-secret';
@@ -92,6 +94,40 @@ test('rejects tampered and expired localStorage sessions', async () => {
       { role: 'user', timestamp, signature },
       secret,
       timestamp + 8 * 24 * 60 * 60 * 1000,
+    ),
+    false,
+  );
+});
+
+test('user sessions bind username, role and issue time', async () => {
+  const timestamp = Date.now();
+  const signature = await generateHmacSignature(
+    userSessionPayload('alice', 'user', timestamp),
+    secret,
+  );
+  assert.equal(
+    await isValidUserSession(
+      { username: 'alice', role: 'user', timestamp, signature },
+      secret,
+    ),
+    true,
+  );
+  assert.equal(
+    await isValidUserSession(
+      { username: 'alice', role: 'admin', timestamp, signature },
+      secret,
+    ),
+    false,
+  );
+  assert.equal(
+    await isValidUserSession(
+      {
+        username: 'alice',
+        role: 'user',
+        timestamp,
+        signature: await generateHmacSignature('alice', secret),
+      },
+      secret,
     ),
     false,
   );

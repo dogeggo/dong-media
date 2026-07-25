@@ -240,7 +240,6 @@
 - ⚡ 收藏乐观更新：使用React 19的useOptimistic优化收藏功能，合并重复useEffect
 - 🖱️ 用户菜单悬停优化：优化用户菜单悬停过渡性能
 - 🎨 Tailwind CSS 4.1优化：优化globals.css以适配Tailwind CSS 4.1
-- 🔧 Telegram用户自动清理：为Telegram用户添加createdAt字段以启用自动清理
 
 ### Fixed
 
@@ -438,8 +437,6 @@
 
 ### Added
 
-- 🔐 Telegram Magic Link身份验证：实现基于Telegram的Magic Link认证功能，提供更安全便捷的登录方式
-- 🤖 自动设置Telegram Webhook：生成Magic Link时自动配置Telegram webhook，简化部署流程
 - 🔍 资源搜索端点权限验证：为/api/search/resources端点新增用户身份验证检查，提升API安全性
 - 🎯 源浏览器完整功能集成：新增源浏览器和测试模块到管理后台，支持源站测试和管理
 - 🎨 源浏览器增强UI设计：优化源浏览器和测试模块UI界面，提升用户体验

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { safeFetch } from '@/lib/safe-upstream-url';
+import { getCandidates } from '@/lib/spiderJar';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
 export const runtime = 'nodejs';
@@ -21,14 +23,22 @@ export async function GET(req: NextRequest) {
 
     // 清理URL（移除MD5部分）
     const cleanUrl = jarUrl.split(';')[0];
+    if (!getCandidates().includes(cleanUrl)) {
+      return NextResponse.json(
+        { error: 'Only the pinned spider JAR may be checked' },
+        { status: 400 },
+      );
+    }
 
     // 检查jar文件可用性
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
 
     try {
-      const response = await fetch(cleanUrl, {
+      const response = await safeFetch(cleanUrl, {
         method: 'HEAD',
+        allowedHosts: ['raw.githubusercontent.com'],
+        maxRedirects: 2,
         signal: controller.signal,
         headers: {
           'User-Agent': DEFAULT_USER_AGENT,

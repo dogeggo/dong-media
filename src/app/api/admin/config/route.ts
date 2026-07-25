@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { AdminConfig, AdminConfigResult } from '@/lib/admin.types';
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { loadConfig } from '@/lib/config';
+import { configSelfCheck, loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 
 export const runtime = 'nodejs';
@@ -91,9 +91,10 @@ export async function POST(request: NextRequest) {
 
   try {
     const newConfig: AdminConfig = await request.json();
+    const sanitizedConfig = await configSelfCheck(newConfig);
 
     // 保存新配置
-    await db.saveAdminConfig(newConfig);
+    await db.saveAdminConfig(sanitizedConfig);
 
     // 🔥 刷新所有页面的缓存，使新配置立即生效（无需重启Docker）
     revalidatePath('/', 'layout');

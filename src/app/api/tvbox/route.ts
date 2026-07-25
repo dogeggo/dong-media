@@ -2,20 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { getCache, setCache } from '@/lib/cache';
 import { getShowAdultContent, loadConfig } from '@/lib/config';
+import { getSiteOrigin } from '@/lib/site-origin';
 import { getCandidates, getSpiderJar } from '@/lib/spiderJar';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
-
-// Helper function to get base URL with SITE_BASE env support
-function getBaseUrl(request: NextRequest): string {
-  // 优先使用环境变量 SITE_BASE（如果用户设置了）
-  const envBase = (process.env.SITE_BASE || '').trim().replace(/\/$/, '');
-  if (envBase) return envBase;
-
-  // Fallback：使用原有逻辑（完全保留）
-  const host = request.headers.get('host') || 'localhost:3000';
-  const protocol = request.headers.get('x-forwarded-proto') || 'http';
-  return `${protocol}://${host}`;
-}
 
 // 生产环境使用Redis/Kvrocks的频率限制
 async function checkRateLimit(
@@ -69,21 +58,6 @@ class ConcurrencyLimiter {
 }
 
 const categoriesLimiter = new ConcurrencyLimiter(10); // 最多同时10个请求
-
-// 私网地址判断
-function isPrivateHost(host: string): boolean {
-  if (!host) return true;
-  const lower = host.toLowerCase();
-  return (
-    lower.startsWith('localhost') ||
-    lower.startsWith('127.') ||
-    lower.startsWith('0.0.0.0') ||
-    lower.startsWith('10.') ||
-    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(lower) ||
-    lower.startsWith('192.168.') ||
-    lower === '::1'
-  );
-}
 
 // TVBox源格式接口 (基于官方标准)
 interface TVBoxSource {
@@ -271,7 +245,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const baseUrl = getBaseUrl(request);
+    const baseUrl = getSiteOrigin(request);
 
     // 从配置中获取源站列表
     const sourceConfigs = config.SourceConfig || [];
@@ -312,13 +286,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // 跟踪全局 spider jar（从 detail 字段中提取）
-    let globalSpiderJar = '';
-
     // 转换为TVBox格式
     let tvboxConfig: TVBoxConfig = {
       // 基础配置
-      spider: '', // 将在后面设置为 globalSpiderJar
+      spider: '', // 将在后面设置为已校验的固定 JAR
       wallpaper: `${baseUrl}/logo.png`, // 使用项目Logo作为壁纸
 
       // 影视源配置
@@ -390,7 +361,6 @@ export async function GET(request: NextRequest) {
                 // }
                 if (obj.jar) {
                   siteJar = obj.jar;
-                  if (!globalSpiderJar) globalSpiderJar = obj.jar;
                 }
               }
             } catch {
@@ -593,7 +563,7 @@ export async function GET(request: NextRequest) {
         {
           name: 'LunaTV内置解析',
           type: 1,
-          url: `${baseUrl}/api/parse?url=`,
+          url: `${baseUrl}/api/parse?token=${encodeURIComponent(token)}&url=`,
           ext: {
             flag: [
               'qiyi',
@@ -701,25 +671,12 @@ export async function GET(request: NextRequest) {
           (live) => !live.disabled,
         );
         if (enabledLives.length === 0) return [];
-
-        // 如果只有一个源，直接返回
-        if (enabledLives.length === 1) {
-          return enabledLives.map((live) => ({
-            name: live.name,
-            type: 0,
-            url: live.url,
-            epg: live.epg || '',
-            logo: '',
-          }));
-        }
-
-        // 多个源时，创建一个聚合源
         return [
           {
             name: 'LunaTV聚合直播',
             type: 0,
-            url: `${baseUrl}/api/live/merged`, // 新的聚合端点
-            epg: enabledLives.find((live) => live.epg)?.epg || '',
+            url: `${baseUrl}/api/live/merged?token=${encodeURIComponent(token)}`,
+            epg: `${baseUrl}/api/live/merged?format=epg&token=${encodeURIComponent(token)}`,
             logo: '',
           },
         ];
@@ -808,37 +765,8 @@ export async function GET(request: NextRequest) {
     // 使用新的 Spider Jar 管理逻辑（下载真实 jar + 缓存）
     const jarInfo = await getSpiderJar(forceSpiderRefresh);
 
-    // 🔑 最终策略：优先使用远程公网 jar，失败时使用本地代理
-    let finalSpiderUrl: string;
-
-    if (jarInfo.success && jarInfo.source !== 'fallback') {
-      // 成功获取远程 jar，直接使用远程 URL（公网地址，减轻服务器负载）
-      finalSpiderUrl = `${jarInfo.source};md5;${jarInfo.md5}`;
-      console.log(`[Spider] 使用远程公网 jar: ${jarInfo.source}`);
-    } else {
-      // 远程失败，使用本地代理端点（确保100%可用）
-      finalSpiderUrl = `${baseUrl}/api/proxy/spider.jar;md5;${jarInfo.md5}`;
-      console.warn(
-        `[Spider] 远程 jar 获取失败，使用本地代理: ${finalSpiderUrl.split(';')[0]}`,
-      );
-    }
-
-    // 如果用户源配置中有自定义jar，优先使用（但必须是公网地址）
-    if (globalSpiderJar) {
-      try {
-        const jarUrl = new URL(globalSpiderJar.split(';')[0]);
-        if (!isPrivateHost(jarUrl.hostname)) {
-          // 用户自定义的公网 jar，直接使用
-          finalSpiderUrl = globalSpiderJar;
-          console.log(`[Spider] 使用用户自定义 jar: ${globalSpiderJar}`);
-        } else {
-          console.warn(`[Spider] 用户配置的jar是私网地址，使用自动选择结果`);
-        }
-      } catch {
-        // URL解析失败，使用自动选择结果
-        console.warn(`[Spider] 用户配置的jar解析失败，使用自动选择结果`);
-      }
-    }
+    // 只使用固定 commit 且通过 SHA-256 校验的 JAR。
+    const finalSpiderUrl = `${jarInfo.source};md5;${jarInfo.md5}`;
 
     // 设置 spider 字段和状态透明化字段
     tvboxConfig.spider = finalSpiderUrl;
@@ -856,7 +784,11 @@ export async function GET(request: NextRequest) {
         sites: tvboxConfig.sites,
         lives: tvboxConfig.lives,
         parses: [
-          { name: '默认解析', type: 0, url: `${baseUrl}/api/parse?url=` },
+          {
+            name: '默认解析',
+            type: 1,
+            url: `${baseUrl}/api/parse?token=${encodeURIComponent(token)}&url=`,
+          },
         ],
       } as TVBoxConfig;
     } else if (mode === 'fast' || mode === 'optimize') {
@@ -963,7 +895,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 添加 Spider 状态透明化字段（帮助诊断）
-    tvboxConfig.spider_backup = `${baseUrl}/api/proxy/spider.jar`; // 本地代理地址
+    tvboxConfig.spider_backup = `${baseUrl}/api/proxy/spider.jar?token=${encodeURIComponent(token)}`;
     tvboxConfig.spider_candidates = getCandidates();
 
     // 根据format参数返回不同格式
@@ -975,10 +907,9 @@ export async function GET(request: NextRequest) {
       return new NextResponse(base64Config, {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET',
-          'Access-Control-Allow-Headers': 'Content-Type',
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+          'X-Content-Type-Options': 'nosniff',
+          'X-Robots-Tag': 'noindex, nofollow, noarchive',
         },
       });
     } else {
@@ -986,10 +917,9 @@ export async function GET(request: NextRequest) {
       return new NextResponse(JSON.stringify(tvboxConfig), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET',
-          'Access-Control-Allow-Headers': 'Content-Type',
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+          'X-Content-Type-Options': 'nosniff',
+          'X-Robots-Tag': 'noindex, nofollow, noarchive',
         },
       });
     }
@@ -997,21 +927,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       {
         error: 'TVBox配置生成失败',
-        details: error instanceof Error ? error.message : String(error),
       },
       { status: 500 },
     );
   }
 }
 
-// 支持CORS预检请求
 export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 200,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    },
-  });
+  return new NextResponse(null, { status: 405 });
 }

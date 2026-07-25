@@ -1,318 +1,120 @@
-/* eslint-disable no-console */
-
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 import { loadConfig } from '@/lib/config';
+import { verifyMediaUrlSignature } from '@/lib/media-signature';
+import {
+  isExecutableDocumentContentType,
+  safeFetch,
+  UnsafeUpstreamUrlError,
+} from '@/lib/safe-upstream-url';
 
 export const runtime = 'nodejs';
 
-// 连接池管理
-import * as http from 'http';
-import * as https from 'https';
+export async function GET(request: NextRequest) {
+  const url = request.nextUrl.searchParams.get('url');
+  const source = request.nextUrl.searchParams.get('moontv-source');
+  if (!url || !source) {
+    return NextResponse.json(
+      { error: 'Missing url or source' },
+      { status: 400 },
+    );
+  }
 
-const httpsAgent = new https.Agent({
-  keepAlive: true,
-  maxSockets: 100,
-  maxFreeSockets: 20,
-  timeout: 30000,
-  keepAliveMsecs: 30000,
-});
-
-const httpAgent = new http.Agent({
-  keepAlive: true,
-  maxSockets: 100,
-  maxFreeSockets: 20,
-  timeout: 30000,
-  keepAliveMsecs: 30000,
-});
-
-// 性能统计
-const segmentStats = {
-  requests: 0,
-  errors: 0,
-  totalBytes: 0,
-  avgResponseTime: 0,
-  activeStreams: 0,
-};
-
-export async function GET(request: Request) {
-  const startTime = Date.now();
-  segmentStats.requests++;
-  segmentStats.activeStreams++;
-
-  const { searchParams } = new URL(request.url);
-  const url = searchParams.get('url');
-  const source = searchParams.get('moontv-source');
-
-  if (!url) {
-    segmentStats.errors++;
-    segmentStats.activeStreams--;
-    return NextResponse.json({ error: 'Missing url' }, { status: 400 });
+  if (
+    !verifyMediaUrlSignature({
+      scope: 'segment',
+      source,
+      url,
+      expires: request.nextUrl.searchParams.get('expires'),
+      signature: request.nextUrl.searchParams.get('signature'),
+    })
+  ) {
+    return NextResponse.json(
+      { error: 'Invalid or expired signature' },
+      { status: 401 },
+    );
   }
 
   const config = await loadConfig();
-  const liveSource = config.LiveConfig?.find((s: any) => s.key === source);
+  const liveSource = config.LiveConfig?.find(
+    (candidate) => candidate.key === source && !candidate.disabled,
+  );
   if (!liveSource) {
-    segmentStats.errors++;
-    segmentStats.activeStreams--;
     return NextResponse.json({ error: 'Source not found' }, { status: 404 });
   }
-  const ua = liveSource.ua || 'AptvPlayer/1.4.10';
 
-  let response: Response | null = null;
-  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-  const abortController = new AbortController();
-  const timeoutId = setTimeout(() => abortController.abort(), 30000); // 30秒超时
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30_000);
 
   try {
-    const decodedUrl = decodeURIComponent(url);
-    const isHttps = decodedUrl.startsWith('https:');
-    const agent = isHttps ? httpsAgent : httpAgent;
-
-    response = await fetch(decodedUrl, {
-      signal: abortController.signal,
+    const range = request.headers.get('range');
+    const response = await safeFetch(url, {
+      maxRedirects: 5,
+      signal: controller.signal,
       headers: {
-        'User-Agent': ua,
-        Accept: 'video/mp2t, video/*, */*',
+        'User-Agent': liveSource.ua || 'AptvPlayer/1.4.10',
+        Accept: 'video/*, audio/*, application/octet-stream, */*',
         'Accept-Encoding': 'identity',
         'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
+        ...(range ? { Range: range } : {}),
       },
-
-      // @ts-ignore - Node.js specific option
-      agent: typeof window === 'undefined' ? agent : undefined,
     });
-
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
-      segmentStats.errors++;
+      await response.body?.cancel();
       return NextResponse.json(
         {
-          error: `Failed to fetch segment: ${response.status} ${response.statusText}`,
+          error: `Upstream segment request failed with status ${response.status}`,
         },
-        { status: response.status >= 500 ? 500 : response.status },
+        { status: response.status },
       );
     }
 
-    const headers = new Headers();
-
-    // 设置内容类型 - 更精确的类型判断
-    const originalContentType = response?.headers.get('Content-Type');
-    if (originalContentType) {
-      headers.set('Content-Type', originalContentType);
-    } else {
-      headers.set('Content-Type', 'video/mp2t');
+    const contentType = response.headers.get('content-type');
+    if (isExecutableDocumentContentType(contentType)) {
+      await response.body?.cancel();
+      return NextResponse.json(
+        { error: 'Executable document responses are not allowed' },
+        { status: 415 },
+      );
     }
 
-    headers.set('Access-Control-Allow-Origin', '*');
-    headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
-    headers.set(
-      'Access-Control-Allow-Headers',
-      'Content-Type, Range, Origin, Accept, User-Agent',
-    );
-    headers.set('Accept-Ranges', 'bytes');
-    headers.set(
-      'Access-Control-Expose-Headers',
-      'Content-Length, Content-Range, Content-Type, Accept-Ranges',
-    );
-    headers.set('Cache-Control', 'public, max-age=300'); // 5分钟缓存
-
-    // 复制原始响应的重要头部
-    const importantHeaders = [
-      'Content-Length',
-      'Content-Range',
-      'Last-Modified',
-      'ETag',
-    ];
-    importantHeaders.forEach((header) => {
-      const value = response?.headers.get(header);
-      if (value) {
-        headers.set(header, value);
-      }
+    const headers = new Headers({
+      'Content-Type': contentType || 'application/octet-stream',
+      'Accept-Ranges': response.headers.get('accept-ranges') || 'bytes',
+      'Cache-Control': 'private, max-age=300',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Robots-Tag': 'noindex, nofollow, noarchive',
     });
+    for (const name of [
+      'content-length',
+      'content-range',
+      'etag',
+      'last-modified',
+    ]) {
+      const value = response.headers.get(name);
+      if (value) headers.set(name, value);
+    }
 
-    const _contentLength = parseInt(
-      response?.headers.get('content-length') || '0',
-      10,
+    return new Response(
+      response.body as unknown as ReadableStream<Uint8Array>,
+      { status: response.status, headers },
     );
-    let bytesTransferred = 0;
-
-    let isCancelled = false;
-    let cleanedUp = false;
-
-    const cleanup = () => {
-      if (cleanedUp) return;
-      cleanedUp = true;
-      isCancelled = true;
-
-      const hadReader = !!reader;
-      if (reader) {
-        reader.cancel().catch(() => {
-          // 忽略取消时的错误
-        });
-        reader = null;
-      }
-
-      if (response?.body && !hadReader) {
-        response.body.cancel().catch(() => {
-          // 忽略取消时的错误
-        });
-      }
-
-      segmentStats.activeStreams--;
-    };
-
-    // 优化的流式传输，带背压控制
-    const stream = new ReadableStream(
-      {
-        start(controller) {
-          if (!response?.body) {
-            controller.close();
-            cleanup();
-            return;
-          }
-
-          reader = response?.body?.getReader();
-
-          function pump(): void {
-            if (isCancelled || !reader) {
-              return;
-            }
-
-            reader
-              .read()
-              .then(({ done, value }) => {
-                if (isCancelled) {
-                  return;
-                }
-
-                if (done) {
-                  controller.close();
-
-                  // 更新统计信息
-                  const responseTime = Date.now() - startTime;
-                  segmentStats.avgResponseTime =
-                    (segmentStats.avgResponseTime *
-                      (segmentStats.requests - 1) +
-                      responseTime) /
-                    segmentStats.requests;
-                  segmentStats.totalBytes += bytesTransferred;
-
-                  cleanup();
-                  return;
-                }
-
-                if (value) {
-                  bytesTransferred += value.byteLength;
-                }
-
-                try {
-                  controller.enqueue(value);
-                } catch (e) {
-                  if (process.env.NODE_ENV === 'development') {
-                    console.warn('Failed to enqueue chunk:', e);
-                  }
-                  cleanup();
-                  return;
-                }
-
-                pump();
-              })
-              .catch((error) => {
-                if (
-                  isCancelled ||
-                  abortController.signal.aborted ||
-                  error?.name === 'AbortError' ||
-                  error?.code === 'ERR_INVALID_STATE' ||
-                  error?.message?.includes('Releasing reader')
-                ) {
-                  cleanup();
-                  return;
-                }
-
-                if (process.env.NODE_ENV === 'development') {
-                  console.warn('Stream pump error:', error);
-                }
-                controller.error(error);
-                cleanup();
-              });
-          }
-
-          pump();
-        },
-        cancel() {
-          // 当流被取消时，确保释放所有资源
-          cleanup();
-        },
-      },
-      {
-        // 添加背压控制
-        highWaterMark: 65536, // 64KB 缓冲区
-        size(chunk) {
-          return chunk ? chunk.byteLength : 0;
-        },
-      },
-    );
-
-    return new Response(stream, { headers });
-  } catch (error: any) {
-    segmentStats.errors++;
-    segmentStats.activeStreams--;
-    clearTimeout(timeoutId);
-
-    // 确保在错误情况下也释放资源
-    const hadReader = !!reader;
-    if (reader) {
-      (reader as ReadableStreamDefaultReader<Uint8Array>).cancel().catch(() => {
-        // 忽略错误
-      });
-      reader = null;
+  } catch (error) {
+    if (error instanceof UnsafeUpstreamUrlError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
     }
-
-    if (response?.body && !hadReader) {
-      response.body.cancel().catch(() => {
-        // 忽略错误
-      });
-    }
-
-    // 处理不同类型的错误
-    if (error.name === 'AbortError') {
+    if (error instanceof Error && error.name === 'AbortError') {
       return NextResponse.json(
-        { error: 'Segment request timeout' },
-        { status: 408 },
+        { error: 'Segment request timed out' },
+        { status: 504 },
       );
-    }
-
-    if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-      return NextResponse.json(
-        { error: 'Network connection failed' },
-        { status: 503 },
-      );
-    }
-
-    if (process.env.NODE_ENV === 'development') {
-      console.error('Segment proxy error:', error);
     }
     return NextResponse.json(
-      {
-        error: 'Failed to fetch segment',
-        details:
-          process.env.NODE_ENV === 'development' ? error.message : undefined,
-      },
-      { status: 500 },
+      { error: 'Segment proxy failed' },
+      { status: 502 },
     );
   } finally {
     clearTimeout(timeoutId);
-
-    // 定期打印统计信息
-    if (
-      segmentStats.requests % 500 === 0 &&
-      process.env.NODE_ENV === 'development'
-    ) {
-      console.log(
-        `Segment Proxy Stats - Requests: ${segmentStats.requests}, Active: ${segmentStats.activeStreams}, Errors: ${segmentStats.errors}, Avg Time: ${segmentStats.avgResponseTime.toFixed(2)}ms, Total: ${(segmentStats.totalBytes / 1024 / 1024).toFixed(2)}MB`,
-      );
-    }
   }
 }

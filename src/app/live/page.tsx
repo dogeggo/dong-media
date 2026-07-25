@@ -72,6 +72,37 @@ interface LiveSource {
   disabled?: boolean;
 }
 
+function HighlightedText({ text, query }: { text: string; query: string }) {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) return <>{text}</>;
+
+  const lowerText = text.toLocaleLowerCase();
+  const lowerQuery = normalizedQuery.toLocaleLowerCase();
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    const matchIndex = lowerText.indexOf(lowerQuery, cursor);
+    if (matchIndex === -1) {
+      parts.push(text.slice(cursor));
+      break;
+    }
+    if (matchIndex > cursor) parts.push(text.slice(cursor, matchIndex));
+    const end = matchIndex + normalizedQuery.length;
+    parts.push(
+      <mark
+        key={`${matchIndex}-${end}`}
+        className='rounded bg-yellow-200 px-0.5 dark:bg-yellow-800'
+      >
+        {text.slice(matchIndex, end)}
+      </mark>,
+    );
+    cursor = end;
+  }
+
+  return <>{parts}</>;
+}
+
 function LivePageClient() {
   const [isMounted, setIsMounted] = useState(false);
   useEffect(() => {
@@ -2713,18 +2744,9 @@ function LivePageClient() {
                                         <div
                                           className={`text-sm font-medium text-gray-900 dark:text-gray-100 ${expandedChannels.has(channel.id) ? '' : 'line-clamp-1 md:line-clamp-2'}`}
                                         >
-                                          <span
-                                            dangerouslySetInnerHTML={{
-                                              __html: searchQuery
-                                                ? channel.name.replace(
-                                                    new RegExp(
-                                                      `(${searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`,
-                                                      'gi',
-                                                    ),
-                                                    '<mark class="bg-yellow-200 dark:bg-yellow-800 px-0.5 rounded">$1</mark>',
-                                                  )
-                                                : channel.name,
-                                            }}
+                                          <HighlightedText
+                                            text={channel.name}
+                                            query={searchQuery}
                                           />
                                         </div>
                                       </div>
@@ -2923,21 +2945,10 @@ function LivePageClient() {
                               {/* 信息 */}
                               <div className='flex-1 min-w-0'>
                                 <div className='text-sm font-medium text-gray-900 dark:text-gray-100 truncate'>
-                                  {sourceSearchQuery ? (
-                                    <span
-                                      dangerouslySetInnerHTML={{
-                                        __html: source.name.replace(
-                                          new RegExp(
-                                            `(${sourceSearchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`,
-                                            'gi',
-                                          ),
-                                          '<mark class="bg-yellow-200 dark:bg-yellow-800 px-0.5 rounded">$1</mark>',
-                                        ),
-                                      }}
-                                    />
-                                  ) : (
-                                    source.name
-                                  )}
+                                  <HighlightedText
+                                    text={source.name}
+                                    query={sourceSearchQuery}
+                                  />
                                 </div>
                                 <div className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
                                   {!source.channelNumber ||

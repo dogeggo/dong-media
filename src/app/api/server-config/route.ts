@@ -1,12 +1,10 @@
-/* eslint-disable no-console */
-
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 import { loadConfig } from '@/lib/config';
 
 export const runtime = 'nodejs';
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   const config = await loadConfig();
 
   const result: any = {
@@ -15,18 +13,6 @@ export async function GET(request: NextRequest) {
     DownloadEnabled: config.DownloadConfig?.enabled ?? true,
   };
 
-  // 添加 Telegram 登录配置（仅公开必要信息）
-  if (config.TelegramAuthConfig?.enabled) {
-    console.log('Telegram config is enabled, adding to result');
-    result.TelegramAuthConfig = {
-      enabled: true,
-      botUsername: config.TelegramAuthConfig.botUsername,
-      buttonSize: config.TelegramAuthConfig.buttonSize || 'large',
-      showAvatar: config.TelegramAuthConfig.showAvatar ?? true,
-      requestWriteAccess: config.TelegramAuthConfig.requestWriteAccess ?? false,
-      // 注意：不返回 botToken，保护敏感信息
-    };
-  }
   // 添加 OIDC 登录配置（仅公开必要信息）
   // 优先使用新的多 Provider 配置
   if (config.OIDCProviders && config.OIDCProviders.length > 0) {

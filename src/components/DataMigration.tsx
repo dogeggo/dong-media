@@ -22,7 +22,11 @@ interface AlertModalProps {
   type: 'success' | 'error' | 'warning';
   title: string;
   message?: string;
-  html?: string;
+  importDetails?: {
+    importedUsers: string;
+    timestamp: string;
+    serverVersion: string;
+  };
   confirmText?: string;
   onConfirm?: () => void;
   showConfirm?: boolean;
@@ -35,7 +39,7 @@ const AlertModal = ({
   type,
   title,
   message,
-  html,
+  importDetails,
   confirmText = '确定',
   onConfirm,
   showConfirm = false,
@@ -105,11 +109,18 @@ const AlertModal = ({
             <p className='text-gray-600 dark:text-gray-400 mb-4'>{message}</p>
           )}
 
-          {html && (
-            <div
-              className='text-left text-gray-600 dark:text-gray-400 mb-4'
-              dangerouslySetInnerHTML={{ __html: html }}
-            />
+          {importDetails && (
+            <div className='text-left text-gray-600 dark:text-gray-400 mb-4'>
+              <p>
+                <strong>导入完成！</strong>
+              </p>
+              <p className='mt-2'>
+                导入的用户数量: {importDetails.importedUsers}
+              </p>
+              <p>备份时间: {importDetails.timestamp}</p>
+              <p>服务器版本: {importDetails.serverVersion}</p>
+              <p className='mt-3 text-orange-600'>请刷新页面以查看最新数据。</p>
+            </div>
           )}
 
           <div className='flex justify-center space-x-3'>
@@ -158,7 +169,11 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
     type: 'success' | 'error' | 'warning';
     title: string;
     message?: string;
-    html?: string;
+    importDetails?: {
+      importedUsers: string;
+      timestamp: string;
+      serverVersion: string;
+    };
     confirmText?: string;
     onConfirm?: () => void;
     showConfirm?: boolean;
@@ -295,15 +310,11 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
       showAlert({
         type: 'success',
         title: '导入成功',
-        html: `
-          <div class="text-left">
-            <p><strong>导入完成！</strong></p>
-            <p class="mt-2">导入的用户数量: ${result.importedUsers}</p>
-            <p>备份时间: ${new Date(result.timestamp).toLocaleString('zh-CN')}</p>
-            <p>服务器版本: ${result.serverVersion || '未知版本'}</p>
-            <p class="mt-3 text-orange-600">请刷新页面以查看最新数据。</p>
-          </div>
-        `,
+        importDetails: {
+          importedUsers: String(result.importedUsers ?? 0),
+          timestamp: new Date(result.timestamp).toLocaleString('zh-CN'),
+          serverVersion: String(result.serverVersion || '未知版本'),
+        },
         confirmText: '刷新页面',
         showConfirm: true,
         onConfirm: async () => {
@@ -516,7 +527,7 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
         type={alertModal.type}
         title={alertModal.title}
         message={alertModal.message}
-        html={alertModal.html}
+        importDetails={alertModal.importDetails}
         confirmText={alertModal.confirmText}
         onConfirm={alertModal.onConfirm}
         showConfirm={alertModal.showConfirm}

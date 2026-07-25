@@ -2,7 +2,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import type { AuthInfo, AuthRole } from '@/lib/auth';
-import { generateHmacSignature, localStorageSessionPayload } from '@/lib/auth';
+import {
+  createUserAuthCookieValue,
+  generateHmacSignature,
+  localStorageSessionPayload,
+} from '@/lib/auth';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import {
@@ -40,9 +44,9 @@ async function generateAuthCookie(options: {
       process.env.PASSWORD,
     );
   } else if (options.username && process.env.PASSWORD) {
-    authData.username = options.username;
-    authData.signature = await generateHmacSignature(
+    return createUserAuthCookieValue(
       options.username,
+      role,
       process.env.PASSWORD,
     );
   }
@@ -91,7 +95,7 @@ export async function POST(req: NextRequest) {
           expires: new Date(0),
           sameSite: 'lax', // 改为 lax 以支持 PWA
           httpOnly: false, // PWA 需要客户端可访问
-          secure: false, // 根据协议自动设置
+          secure: req.nextUrl.protocol === 'https:',
         });
 
         return response;

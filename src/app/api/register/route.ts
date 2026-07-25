@@ -2,8 +2,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { AdminConfig } from '@/lib/admin.types';
-import type { AuthInfo, AuthRole } from '@/lib/auth';
-import { generateHmacSignature } from '@/lib/auth';
+import type { AuthRole } from '@/lib/auth';
+import { createUserAuthCookieValue } from '@/lib/auth';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { generateToken } from '@/lib/utils';
@@ -23,22 +23,10 @@ async function generateAuthCookie(
   username: string,
   role: AuthRole = 'user',
 ): Promise<string> {
-  const timestamp = Date.now();
-  const authData: AuthInfo = {
-    role,
-    username,
-    timestamp,
-    loginTime: timestamp,
-  };
-
-  if (process.env.PASSWORD) {
-    authData.signature = await generateHmacSignature(
-      username,
-      process.env.PASSWORD,
-    );
+  if (!process.env.PASSWORD) {
+    throw new Error('PASSWORD is required to create an authenticated session');
   }
-
-  return encodeURIComponent(JSON.stringify(authData));
+  return createUserAuthCookieValue(username, role, process.env.PASSWORD);
 }
 
 export async function POST(req: NextRequest) {

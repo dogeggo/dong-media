@@ -1,13 +1,13 @@
 # ---- 第 1 阶段：安装依赖 ----
 FROM node:24-alpine AS deps
 
-# 启用 corepack 并激活 pnpm（Node20 默认提供 corepack）
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# 启用 corepack，并使用 package.json 中固定的 pnpm 版本
+RUN corepack enable && corepack prepare pnpm@10.14.0 --activate
 
 WORKDIR /app
 
-# 仅复制依赖清单，提高构建缓存利用率
-COPY package.json pnpm-lock.yaml ./
+# 复制依赖清单和 pnpm 配置，提高构建缓存利用率
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
 # 清理任何潜在的缓存并安装所有依赖（包括可选的原生模块）
 RUN pnpm store prune && pnpm install --frozen-lockfile
@@ -16,11 +16,11 @@ RUN pnpm store prune && pnpm install --frozen-lockfile
 FROM node:24-alpine AS builder
 # 安装构建工具以编译原生模块
 RUN apk add --no-cache python3 make g++
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@10.14.0 --activate
 WORKDIR /app
 
-# 复制package files先，确保依赖版本一致
-COPY package.json pnpm-lock.yaml ./
+# 先复制依赖清单和 pnpm 配置，确保依赖版本及 overrides 一致
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # 复制依赖
 COPY --from=deps /app/node_modules ./node_modules
 # 验证依赖完整性，如果不匹配则重新安装

@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 
+import { safeFetch } from '@/lib/safe-upstream-url';
 import { getAllCandidates } from '@/lib/spiderJar';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
@@ -77,8 +78,10 @@ async function testJarSource(
         'Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 Mobile Safari/537.36';
     }
 
-    const response = await fetch(url, {
+    const response = await safeFetch(url, {
       method: 'HEAD',
+      allowedHosts: ['raw.githubusercontent.com'],
+      maxRedirects: 2,
       signal: controller.signal,
       headers,
       redirect: 'follow',
@@ -115,8 +118,10 @@ async function testJarSource(
     const verifyController = new AbortController();
     const verifyTimeout = setTimeout(() => verifyController.abort(), 5000);
 
-    const verifyResponse = await fetch(url, {
+    const verifyResponse = await safeFetch(url, {
       method: 'GET',
+      allowedHosts: ['raw.githubusercontent.com'],
+      maxRedirects: 2,
       signal: verifyController.signal,
       headers: {
         ...headers,

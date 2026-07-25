@@ -889,9 +889,6 @@ function HomeClient() {
 
   return (
     <PageLayout>
-      {/* Telegram 新用户欢迎弹窗 */}
-      {/* <TelegramWelcomeModal /> */}
-
       <div className='overflow-visible sm:pd-45 sm:pb-0 md:pb-safe-bottom'>
         {/* 顶部 Tab 切换 - AI 按钮已移至右上角导航栏 */}
         <div className='mb-8 flex items-center justify-center'>

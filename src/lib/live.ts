@@ -3,6 +3,7 @@ import { gunzip } from 'zlib';
 
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
+import { parseSafeHttpUrl, safeFetch } from '@/lib/safe-upstream-url';
 
 const defaultUA = 'AptvPlayer/1.4.10';
 const TVBOX_UA = 'okhttp/4.1.0';
@@ -68,6 +69,32 @@ export async function getCachedLiveChannels(
   return cachedLiveChannels[key] || null;
 }
 
+export async function isConfiguredLiveChannelUrl(
+  sourceKey: string,
+  targetUrl: string,
+): Promise<boolean> {
+  let normalizedTarget: string;
+  try {
+    const parsed = parseSafeHttpUrl(targetUrl);
+    parsed.hash = '';
+    normalizedTarget = parsed.toString();
+  } catch {
+    return false;
+  }
+
+  const source = await getCachedLiveChannels(sourceKey);
+  if (!source) return false;
+  return source.channels.some((channel) => {
+    try {
+      const parsed = parseSafeHttpUrl(channel.url);
+      parsed.hash = '';
+      return parsed.toString() === normalizedTarget;
+    } catch {
+      return false;
+    }
+  });
+}
+
 export async function refreshLiveChannels(liveInfo: {
   key: string;
   name: string;
@@ -109,7 +136,8 @@ export async function refreshLiveChannels(liveInfo: {
     console.log(
       `[Live] Fetching URL: ${liveInfo.url} with UA: ${isTvBox ? TVBOX_UA : ua}`,
     );
-    const response = await fetch(liveInfo.url, {
+    const response = await safeFetch(liveInfo.url, {
+      maxRedirects: 5,
       headers: {
         'User-Agent': isTvBox ? TVBOX_UA : ua,
       },
@@ -288,7 +316,8 @@ async function processTvBoxContent(
       const liveUa = firstLive.ua || TVBOX_UA;
 
       try {
-        const response = await fetch(firstLive.url, {
+        const response = await safeFetch(firstLive.url, {
+          maxRedirects: 5,
           headers: {
             'User-Agent': liveUa,
           },
@@ -492,7 +521,8 @@ async function parseEpg(
   const epgChannelIdToLogo = new Map<string, string>();
 
   try {
-    const response = await fetch(epgUrl, {
+    const response = await safeFetch(epgUrl, {
+      maxRedirects: 5,
       headers: { 'User-Agent': ua },
     });
     if (!response.ok) return { epgs: {}, logos: {} };

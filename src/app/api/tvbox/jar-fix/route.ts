@@ -2,6 +2,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getUserRegion } from '@/lib/networkDetection';
+import { safeFetch } from '@/lib/safe-upstream-url';
+import { getCandidates } from '@/lib/spiderJar';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
 export const runtime = 'nodejs';
@@ -13,44 +15,12 @@ export const dynamic = 'force-dynamic';
  */
 
 // 验证通过的稳定 JAR 源列表（2025-10-06 测试 - 已验证文件头）
-const VERIFIED_JAR_SOURCES = [
-  {
-    url: 'https://hub.gitmirror.com/raw.githubusercontent.com/FongMi/CatVodSpider/main/jar/custom_spider.jar',
-    name: 'GitMirror国内CDN',
-    region: 'domestic',
-    priority: 1,
-  },
-  {
-    url: 'https://raw.githubusercontent.com/FongMi/CatVodSpider/main/jar/custom_spider.jar',
-    name: 'GitHub-FongMi官方',
-    region: 'international',
-    priority: 1,
-  },
-  {
-    url: 'https://raw.githubusercontent.com/qlql765/CatVodTVSpider-by-zhixc/main/jar/custom_spider.jar',
-    name: 'GitHub-qlql765镜像',
-    region: 'international',
-    priority: 2,
-  },
-  {
-    url: 'https://raw.githubusercontent.com/gaotianliuyun/gao/master/jar/custom_spider.jar',
-    name: 'GitHub-gaotianliuyun备份',
-    region: 'international',
-    priority: 2,
-  },
-  {
-    url: 'https://gh-proxy.com/https://raw.githubusercontent.com/FongMi/CatVodSpider/main/jar/custom_spider.jar',
-    name: 'gh-proxy代理源',
-    region: 'proxy',
-    priority: 3,
-  },
-  {
-    url: 'https://cors.isteed.cc/github.com/FongMi/CatVodSpider/raw/main/jar/custom_spider.jar',
-    name: 'CORS代理源',
-    region: 'proxy',
-    priority: 3,
-  },
-];
+const VERIFIED_JAR_SOURCES = getCandidates().map((url) => ({
+  url,
+  name: '固定版本 GitHub 源',
+  region: 'international',
+  priority: 1,
+}));
 
 // 测试单个JAR源
 async function testJarSource(source: any): Promise<{
@@ -71,8 +41,10 @@ async function testJarSource(source: any): Promise<{
     const userAgent =
       source.region === 'domestic' ? DEFAULT_USER_AGENT : 'LunaTV-JarTest/1.0';
 
-    const response = await fetch(source.url, {
+    const response = await safeFetch(source.url, {
       method: 'HEAD',
+      allowedHosts: ['raw.githubusercontent.com'],
+      maxRedirects: 2,
       signal: controller.signal,
       headers: {
         'User-Agent': userAgent,

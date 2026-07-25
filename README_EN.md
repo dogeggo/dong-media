@@ -119,7 +119,6 @@ This project is a deeply customized version based on **MoonTV**, continuously de
   - **Backward Compatible**: Supports automatic migration from legacy single-provider configuration
 - **V2 User Storage System**: SHA256 encryption, improved user management and OIDC integration
   - **V2 User Data Backup**: Backup/migration system fully supports V2 user data
-- **Telegram Magic Link Authentication**: Secure and convenient Telegram-based login with auto webhook configuration
 - **User Level System**: Replaces large login count numbers with friendly level display
 - **Default User Group for New Users**: Auto-assign default user group for new registrations
 - **User Group Filtering**: Admin backend user list supports filtering by user group
@@ -266,7 +265,6 @@ This project is licensed under **CC BY-NC-SA 4.0**, with the following terms:
 
 ### 📊 User Management
 
-- ✅ Telegram Magic Link authentication (secure convenient login, auto webhook config)
 - ✅ User level system (replaces large login count numbers)
 - ✅ Playback statistics (watch time, video count, recent records, global/personal tab switching)
 - ✅ Dual reminder system (new episodes red theme, continue watching blue theme, gradient badges)
@@ -1135,7 +1133,7 @@ For complete feature updates and bug fixes, see [CHANGELOG](CHANGELOG).
 - **v5.6.3**: Short Drama Multi-source Search, Smart Source Filtering, Upcoming Smart Distribution, Comprehensive z-index Conflict Fixes
 - **v5.6.2**: Upcoming Release Calendar, Hero Banner Full Category Support, Live DVR Detection, Mobile Banner Optimization
 - **v5.6.1**: Hero Banner & Modern Navigation UI, TVBox Intelligent Search Proxy, Export Format Selection
-- **v5.6.0**: Telegram Magic Link authentication, Source Browser & Testing Module, video source import/export
+- **v5.6.0**: Source Browser & Testing Module, video source import/export
 - **v5.5.0**: User level system, release calendar, inactive user cleanup
 - **v5.4.0**: Complete short drama features, playback statistics system
 - **v5.3.0**: YouTube integration, AI recommendation system, TVBox security config

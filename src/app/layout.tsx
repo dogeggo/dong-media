@@ -5,6 +5,7 @@ import { cookies, headers } from 'next/headers';
 import './globals.css';
 
 import { loadConfig } from '@/lib/config';
+import { serializeInlineJson } from '@/lib/inline-json';
 
 import CacheCleaner from '../components/CacheCleaner';
 import { DownloadPanel } from '../components/download/DownloadPanel';
@@ -99,7 +100,7 @@ export default async function RootLayout({
           nonce={nonce}
           suppressHydrationWarning
           dangerouslySetInnerHTML={{
-            __html: `window.RUNTIME_CONFIG = ${JSON.stringify(runtimeConfig)};`,
+            __html: `window.RUNTIME_CONFIG = ${serializeInlineJson(runtimeConfig)};`,
           }}
         />
       </head>

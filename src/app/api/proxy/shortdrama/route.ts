@@ -1,35 +1,22 @@
-/* eslint-disable no-console */
+import { NextRequest, NextResponse } from 'next/server';
 
-import { NextResponse } from 'next/server';
-
+import { authenticateRequest } from '@/lib/request-auth';
+import {
+  isExecutableDocumentContentType,
+  safeFetch,
+  UnsafeUpstreamUrlError,
+} from '@/lib/safe-upstream-url';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
 export const runtime = 'nodejs';
 
-import * as http from 'http';
-import * as https from 'https';
+async function proxyMedia(request: NextRequest, method: 'GET' | 'HEAD') {
+  if (!(await authenticateRequest(request))) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
-const httpsAgent = new https.Agent({
-  keepAlive: true,
-  maxSockets: 50,
-  maxFreeSockets: 10,
-  timeout: 60000,
-  keepAliveMsecs: 30000,
-});
-
-const httpAgent = new http.Agent({
-  keepAlive: true,
-  maxSockets: 50,
-  maxFreeSockets: 10,
-  timeout: 60000,
-  keepAliveMsecs: 30000,
-});
-
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const url = searchParams.get('url');
-
-  if (!url) {
+  const targetUrl = request.nextUrl.searchParams.get('url');
+  if (!targetUrl) {
     return NextResponse.json(
       { error: 'Missing url parameter' },
       { status: 400 },
@@ -37,89 +24,86 @@ export async function GET(request: Request) {
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒超时
+  const timeoutId = setTimeout(() => controller.abort(), 30_000);
 
   try {
-    const decodedUrl = decodeURIComponent(url);
-    const isHttps = decodedUrl.startsWith('https:');
-    const agent = isHttps ? httpsAgent : httpAgent;
-
-    const headers: Record<string, string> = {
-      'User-Agent': DEFAULT_USER_AGENT,
-      Accept: '*/*',
-      'Accept-Encoding': 'identity',
-      Connection: 'keep-alive',
-      Range: request.headers.get('range') || '',
-    };
-
-    // 移除空的 Range header
-    if (!headers['Range']) {
-      delete headers['Range'];
-    }
-
-    const response = await fetch(decodedUrl, {
-      cache: 'no-cache',
-      redirect: 'follow',
+    const range = request.headers.get('range');
+    const response = await safeFetch(targetUrl, {
+      method,
+      cache: 'no-store',
+      maxRedirects: 5,
       signal: controller.signal,
-      headers: new Headers(headers),
-
-      // @ts-ignore - Node.js specific option
-      agent: typeof window === 'undefined' ? agent : undefined,
+      headers: {
+        'User-Agent': DEFAULT_USER_AGENT,
+        Accept:
+          'video/*, audio/*, application/octet-stream, application/vnd.apple.mpegurl, application/x-mpegurl, */*',
+        'Accept-Encoding': 'identity',
+        ...(range ? { Range: range } : {}),
+      },
     });
 
-    clearTimeout(timeoutId);
-
     if (!response.ok) {
+      await response.body?.cancel();
       return NextResponse.json(
-        { error: `Upstream error: ${response.status}` },
+        { error: `Upstream request failed with status ${response.status}` },
         { status: response.status },
       );
     }
 
-    // 流式传输视频内容
-    const responseHeaders = new Headers();
-    responseHeaders.set(
-      'Content-Type',
-      response.headers.get('content-type') || 'video/mp4',
-    );
-    responseHeaders.set('Accept-Ranges', 'bytes');
-    responseHeaders.set('Access-Control-Allow-Origin', '*');
-    responseHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    responseHeaders.set('Access-Control-Allow-Headers', 'Range');
-
-    if (response.headers.get('content-length')) {
-      responseHeaders.set(
-        'Content-Length',
-        response.headers.get('content-length')!,
-      );
-    }
-    if (response.headers.get('content-range')) {
-      responseHeaders.set(
-        'Content-Range',
-        response.headers.get('content-range')!,
+    const contentType = response.headers.get('content-type');
+    if (isExecutableDocumentContentType(contentType)) {
+      await response.body?.cancel();
+      return NextResponse.json(
+        { error: 'Executable document responses are not allowed' },
+        { status: 415 },
       );
     }
 
-    return new NextResponse(response.body, {
-      status: response.status,
-      headers: responseHeaders,
+    const headers = new Headers({
+      'Content-Type': contentType || 'application/octet-stream',
+      'Accept-Ranges': response.headers.get('accept-ranges') || 'bytes',
+      'Cache-Control': 'private, no-store, max-age=0',
+      'Content-Security-Policy': "default-src 'none'; sandbox",
+      'X-Content-Type-Options': 'nosniff',
+      'X-Robots-Tag': 'noindex, nofollow, noarchive',
     });
-  } catch (error: any) {
-    clearTimeout(timeoutId);
-    console.error('短剧代理错误:', error);
-
-    if (error.name === 'AbortError') {
-      return NextResponse.json({ error: 'Request timeout' }, { status: 504 });
+    for (const name of [
+      'content-length',
+      'content-range',
+      'etag',
+      'last-modified',
+    ]) {
+      const value = response.headers.get(name);
+      if (value) headers.set(name, value);
     }
 
-    return NextResponse.json(
-      { error: `Proxy error: ${error.message}` },
-      { status: 500 },
+    return new NextResponse(
+      method === 'HEAD' ? null : (response.body as unknown as BodyInit),
+      {
+        status: response.status,
+        headers,
+      },
     );
+  } catch (error) {
+    if (error instanceof UnsafeUpstreamUrlError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof Error && error.name === 'AbortError') {
+      return NextResponse.json(
+        { error: 'Upstream request timed out' },
+        { status: 504 },
+      );
+    }
+    return NextResponse.json({ error: 'Media proxy failed' }, { status: 502 });
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
-export async function HEAD(request: Request) {
-  // HEAD 请求也需要支持
-  return GET(request);
+export async function GET(request: NextRequest) {
+  return proxyMedia(request, 'GET');
+}
+
+export async function HEAD(request: NextRequest) {
+  return proxyMedia(request, 'HEAD');
 }

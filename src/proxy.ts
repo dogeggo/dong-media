@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   getAuthInfoFromCookie,
   isValidLocalStorageSession,
-  verifyHmacSignature,
+  isValidUserSession,
 } from '@/lib/auth';
 import {
   LOGIN_RETURN_TO_COOKIE,
@@ -24,7 +24,7 @@ export async function proxy(request: NextRequest) {
   // Note: We allow chrome-extension: scheme for local development extensions
   const cspHeader = `
     default-src 'self';
-    script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'unsafe-eval' 'wasm-unsafe-eval' chrome-extension:;
+    script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'wasm-unsafe-eval' chrome-extension:;
     style-src 'self' 'unsafe-inline';
     img-src 'self' blob: data: https:;
     media-src 'self' blob: data: https: http:;
@@ -116,7 +116,11 @@ export async function proxy(request: NextRequest) {
     'camera=(), microphone=(), geolocation=()',
   );
 
-  if (pathname === '/login' || pathname === '/play') {
+  if (
+    pathname === '/login' ||
+    pathname === '/play' ||
+    pathname === '/oidc-register'
+  ) {
     response.headers.set(
       'X-Robots-Tag',
       'noindex, nofollow, noarchive, nosnippet, noimageindex',
@@ -124,7 +128,7 @@ export async function proxy(request: NextRequest) {
     response.headers.set('Cache-Control', 'private, no-store, max-age=0');
   }
 
-  if (pathname === '/login') {
+  if (pathname === '/login' || pathname === '/oidc-register') {
     response.headers.set('Referrer-Policy', 'no-referrer');
   }
 
@@ -215,35 +219,17 @@ async function handleAuthentication(
     );
   }
 
-  // 其他模式：只验证签名
-  // 检查是否有用户名（非localStorage模式下密码不存储在cookie中）
-  if (!authInfo.username || !authInfo.signature) {
-    console.log(`[Middleware ${requestId}] Missing username or signature:`, {
-      hasUsername: !!authInfo.username,
-      hasSignature: !!authInfo.signature,
-    });
-    return handleAuthFailure(request, pathname);
-  }
-
-  // 验证签名（如果存在）
-  if (authInfo.signature) {
-    const isValidSignature = await verifyHmacSignature(
-      authInfo.username,
-      authInfo.signature,
-      process.env.PASSWORD || '',
+  // 数据库存储模式使用包含用户名、角色和签发时间的完整会话签名。
+  // 旧的仅用户名签名不再接受。
+  if (await isValidUserSession(authInfo, process.env.PASSWORD)) {
+    return (
+      response ||
+      NextResponse.next({
+        request: {
+          headers: requestHeaders,
+        },
+      })
     );
-
-    // 签名验证通过即可
-    if (isValidSignature) {
-      return (
-        response ||
-        NextResponse.next({
-          request: {
-            headers: requestHeaders,
-          },
-        })
-      );
-    }
   }
   // 签名验证失败或不存在签名
   console.log(
@@ -281,7 +267,6 @@ function shouldSkipAuth(pathname: string): boolean {
     '/icons/',
     '/logo.png',
     '/screenshot.png',
-    '/api/telegram/', // Telegram API 端点
   ];
 
   return skipPaths.some((path) => pathname.startsWith(path));
@@ -290,6 +275,6 @@ function shouldSkipAuth(pathname: string): boolean {
 // 配置middleware匹配规则
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|register|oidc-register|warning|api/login|api/register|api/logout|api/cron|api/server-config|api/tvbox|api/live/merged|api/parse|api/bing-wallpaper|api/proxy/|api/telegram/|api/auth/oidc/).*)',
+    '/((?!_next/static|_next/image|favicon.ico|register|oidc-register|warning|api/login|api/register|api/logout|api/cron|api/server-config|api/tvbox(?:$|/search$)|api/live/merged|api/parse|api/bing-wallpaper|api/proxy/|api/auth/oidc/).*)',
   ],
 };
