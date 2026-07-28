@@ -1,6 +1,7 @@
 /* eslint-disable no-console */
 
 import { NextRequest, NextResponse } from 'next/server';
+import '@/lib/server-cache';
 
 import { DOUBAN_CACHE_EXPIRE } from '@/lib/cache';
 import { getDoubanRecommends } from '@/lib/douban-api';

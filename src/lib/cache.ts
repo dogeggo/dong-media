@@ -53,110 +53,24 @@ const DEFAULT_CACHE_PREFIXES = [
   'danmu-',
 ];
 
-export const HERO_IMAGE_CACHE = 'luna-image-cache';
-export const HERO_VIDEO_CACHE = 'luna-video-cache';
-export const HERO_CAROUSEL_MANIFEST_KEY = 'luna-hero-carousel-manifest';
-
-const normalizeUrl = (raw: string) => {
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
+type ServerCacheRuntime = {
+  get: (key: string) => Promise<any | null>;
+  set: (key: string, data: any, expireSeconds: number) => Promise<void>;
 };
 
-const extractAssetId = (url: string) => {
-  try {
-    const urlObj = new URL(url, 'http://localhost');
-    const idParam = urlObj.searchParams.get('id');
-    if (idParam) return idParam;
-
-    const targetUrl = normalizeUrl(urlObj.searchParams.get('url') || url);
-    const targetObj = new URL(targetUrl, 'http://localhost');
-    const parts = targetObj.pathname.split('/');
-    return parts[parts.length - 1] || targetUrl;
-  } catch {
-    return url;
-  }
-};
-
-export const getHeroImageCacheKey = (imageUrl: string) =>
-  `https://luna-cache/image/${extractAssetId(imageUrl)}`;
-
-export const getHeroVideoCacheKey = (doubanId: string | number) =>
-  `https://luna-cache/video/${doubanId}`;
-
-type HeroCarouselManifest = {
-  images: string[];
-  videos: string[];
-  updatedAt: number;
-};
-
-function readHeroCarouselManifest(): HeroCarouselManifest | null {
-  if (typeof window === 'undefined') return null;
-  const win = window as typeof window & {
-    __heroCarouselCacheManifest?: HeroCarouselManifest;
-  };
-  if (win.__heroCarouselCacheManifest) {
-    return win.__heroCarouselCacheManifest;
-  }
-
-  if (typeof localStorage === 'undefined') return null;
-  const raw = localStorage.getItem(HERO_CAROUSEL_MANIFEST_KEY);
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<HeroCarouselManifest>;
-    const images = Array.isArray(parsed.images)
-      ? parsed.images.filter((item): item is string => typeof item === 'string')
-      : [];
-    const videos = Array.isArray(parsed.videos)
-      ? parsed.videos.filter((item): item is string => typeof item === 'string')
-      : [];
-    const updatedAt =
-      typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0;
-    const manifest = { images, videos, updatedAt };
-    win.__heroCarouselCacheManifest = manifest;
-    return manifest;
-  } catch (_error) {
-    return null;
-  }
-}
-
-async function cleanCacheStorageEntries(
-  cacheName: string,
-  keepKeys: Set<string>,
-): Promise<void> {
-  if (typeof window === 'undefined' || !('caches' in window)) return;
-  try {
-    const cache = await caches.open(cacheName);
-    const requests = await cache.keys();
-    await Promise.all(
-      requests.map((request) => {
-        if (keepKeys.has(request.url)) return Promise.resolve(false);
-        return cache.delete(request);
-      }),
-    );
-  } catch (error) {
-    console.warn(`清理 ${cacheName} 缓存失败:`, error);
-  }
-}
-
-async function cleanHeroCarouselCache(): Promise<void> {
-  const manifest = readHeroCarouselManifest();
-  if (!manifest) return;
-
-  const imageKeys = new Set(manifest.images);
-  const videoKeys = new Set(manifest.videos);
-
-  await Promise.all([
-    cleanCacheStorageEntries(HERO_IMAGE_CACHE, imageKeys),
-    cleanCacheStorageEntries(HERO_VIDEO_CACHE, videoKeys),
-  ]);
+function getServerCacheRuntime(): ServerCacheRuntime | undefined {
+  return (
+    globalThis as typeof globalThis & {
+      __serverCacheRuntime?: ServerCacheRuntime;
+    }
+  ).__serverCacheRuntime;
 }
 
 type CacheCleanerState = {
   started: boolean;
   intervalId?: number;
+  idleId?: number;
+  timeoutId?: number;
 };
 
 function getCacheCleanerState(): CacheCleanerState | null {
@@ -171,32 +85,34 @@ function getCacheCleanerState(): CacheCleanerState | null {
 }
 
 // 在客户端显式初始化缓存清理（避免模块加载副作用）
-export async function initCacheCleaner(options?: {
+export function initCacheCleaner(options?: {
   intervalMs?: number;
   prefixes?: string[];
-}): Promise<void> {
+}): void {
   const state = getCacheCleanerState();
   if (!state || state.started) return;
 
   state.started = true;
   const prefixes = options?.prefixes ?? DEFAULT_CACHE_PREFIXES;
 
-  for (const prefix of prefixes) {
-    // 立即清理一次过期缓存
-    await cleanExpiredCache(prefix);
-  }
-  await cleanHeroCarouselCache();
+  const scheduleCleanup = () => {
+    const run = () => {
+      state.idleId = undefined;
+      state.timeoutId = undefined;
+      cleanExpiredCaches(prefixes);
+    };
+
+    if (typeof window.requestIdleCallback === 'function') {
+      state.idleId = window.requestIdleCallback(run, { timeout: 3000 });
+    } else {
+      state.timeoutId = window.setTimeout(run, 500);
+    }
+  };
+
+  scheduleCleanup();
 
   const intervalMs = options?.intervalMs ?? 10 * 60 * 1000;
-  state.intervalId = window.setInterval(() => {
-    for (const prefix of prefixes) {
-      cleanExpiredCache(prefix);
-    }
-    void cleanHeroCarouselCache();
-    console.log('定时清理过期缓存完成.');
-  }, intervalMs);
-
-  console.log('缓存系统已初始化');
+  state.intervalId = window.setInterval(scheduleCleanup, intervalMs);
 }
 
 // 缓存工具函数
@@ -273,14 +189,8 @@ export function getTMDBCacheStats(): {
 // 统一缓存获取方法
 export async function getCache(key: string): Promise<any | null> {
   try {
-    // 如果在服务端，直接使用 DB
     if (typeof window === 'undefined') {
-      const { db } = await import('@/lib/db');
-      var cached = await db.getCache(key);
-      if (!key.startsWith('video-search') && cached) {
-        console.log(`✅ 缓存命中: key = ${key}`);
-      }
-      return cached;
+      return (await getServerCacheRuntime()?.get(key)) ?? null;
     }
 
     // 兜底：从localStorage获取（兼容性）
@@ -289,7 +199,7 @@ export async function getCache(key: string): Promise<any | null> {
       if (localCached) {
         const { data, expire } = JSON.parse(localCached);
         if (Date.now() <= expire) {
-          if (!key.startsWith('video-search') && cached) {
+          if (!key.startsWith('video-search')) {
             console.log(`✅ 缓存命中: key = ${key}`);
           }
           return data;
@@ -311,13 +221,8 @@ export async function setCache(
   expireSeconds: number,
 ): Promise<void> {
   try {
-    // 如果在服务端，直接使用 DB
     if (typeof window === 'undefined') {
-      const { db } = await import('@/lib/db');
-      await db.setCache(key, data, expireSeconds);
-      if (!key.startsWith('video-search')) {
-        console.log(`✅ 写入缓存成功: key = ${key}, expire = ${expireSeconds}`);
-      }
+      await getServerCacheRuntime()?.set(key, data, expireSeconds);
       return;
     }
 
@@ -346,18 +251,25 @@ export async function setCache(
 
 // 清理过期缓存
 export async function cleanExpiredCache(prefix: string): Promise<void> {
+  cleanExpiredCaches([prefix]);
+}
+
+function cleanExpiredCaches(prefixes: string[]): void {
   try {
-    // 清理localStorage中的过期缓存
     if (typeof localStorage !== 'undefined') {
       const keysToRemove: string[] = [];
+      const now = Date.now();
+
+      // 一次遍历完成全部缓存前缀的清理，避免首页启动时重复扫描
+      // localStorage 并反复 JSON.parse。
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
-        if (key && key.startsWith(prefix)) {
+        if (key && prefixes.some((prefix) => key.startsWith(prefix))) {
           try {
             const cached = localStorage.getItem(key);
             if (cached) {
               const { expire } = JSON.parse(cached);
-              if (Date.now() > expire) {
+              if (typeof expire === 'number' && now > expire) {
                 keysToRemove.push(key);
               }
             }

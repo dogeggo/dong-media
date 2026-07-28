@@ -12,14 +12,7 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import {
-  getHeroImageCacheKey,
-  getHeroVideoCacheKey,
-  HERO_CAROUSEL_MANIFEST_KEY,
-  HERO_IMAGE_CACHE,
-  HERO_VIDEO_CACHE,
-} from '@/lib/cache';
-import { processImageUrl } from '@/lib/utils';
+import { processImageUrl } from '@/lib/image-url';
 
 import { useAutoplay } from './hooks/useAutoplay';
 import { useSwipeGesture } from './hooks/useSwipeGesture';
@@ -45,34 +38,13 @@ interface HeroBannerProps {
   enableVideo?: boolean;
 }
 
-const RETRY_INTERVAL_MS = 10 * 60 * 1000;
-const BACKGROUND_WARMUP_DELAY_MS = 2000;
-const CURRENT_VIDEO_WARMUP_DELAY_MS = 2500;
+interface NetworkInformation {
+  effectiveType?: string;
+  saveData?: boolean;
+}
 
-type ScheduledTask =
-  | { type: 'idle'; id: number }
-  | { type: 'timeout'; id: number }
-  | null;
-
-type IdleWindow = Window &
-  typeof globalThis & {
-    requestIdleCallback?: (
-      callback: () => void,
-      options?: { timeout: number },
-    ) => number;
-    cancelIdleCallback?: (id: number) => void;
-  };
-
-const toItemKey = (item: BannerItem) => String(item.douban_id ?? item.id);
-
-const isAbortError = (error: unknown, signal?: AbortSignal) => {
-  if (signal?.aborted) return true;
-  if (error instanceof DOMException && error.name === 'AbortError') return true;
-  if (error && typeof error === 'object' && 'name' in error) {
-    return (error as { name?: string }).name === 'AbortError';
-  }
-  return false;
-};
+const MAX_VIDEO_RETRIES = 4;
+const VIDEO_RETRY_DELAY_MS = 5000;
 
 const getHDBackdrop = (url?: string) => {
   if (!url) return url;
@@ -86,200 +58,99 @@ const getHDBackdrop = (url?: string) => {
 
 const getImageUrl = (item: BannerItem) => {
   const rawUrl = getHDBackdrop(item.backdrop || item.poster);
-  if (!rawUrl) return null;
-  return processImageUrl(rawUrl);
+  return rawUrl ? processImageUrl(rawUrl) : processImageUrl(item.poster);
 };
 
-const getVideoFetchUrl = (doubanId: string | number) =>
-  `/api/video-proxy?id=${doubanId}&carousel=1`;
-
-const scheduleBackgroundTask = (
-  callback: () => void,
-  timeout = BACKGROUND_WARMUP_DELAY_MS,
-): ScheduledTask => {
-  if (typeof window === 'undefined') return null;
-
-  const idleWindow = window as IdleWindow;
-  if (typeof idleWindow.requestIdleCallback === 'function') {
-    return {
-      type: 'idle',
-      id: idleWindow.requestIdleCallback(() => callback(), { timeout }),
-    };
-  }
-
-  return {
-    type: 'timeout',
-    id: window.setTimeout(callback, timeout),
-  };
-};
-
-const cancelScheduledTask = (task: ScheduledTask) => {
-  if (!task || typeof window === 'undefined') return;
-
-  const idleWindow = window as IdleWindow;
-  if (
-    task.type === 'idle' &&
-    typeof idleWindow.cancelIdleCallback === 'function'
-  ) {
-    idleWindow.cancelIdleCallback(task.id);
-    return;
-  }
-
-  window.clearTimeout(task.id);
-};
-
-const useCachedBlobUrl = (
-  cacheName: string,
-  cacheKey: string | null,
-  enabled = true,
-) => {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!enabled || !cacheKey) {
-      setBlobUrl(null);
-      return;
-    }
-
-    if (typeof window === 'undefined' || !('caches' in window)) {
-      setBlobUrl(null);
-      return;
-    }
-
-    let cancelled = false;
-    let objectUrl: string | null = null;
-
-    const loadFromCache = async () => {
-      try {
-        const cache = await caches.open(cacheName);
-        const cachedResponse = await cache.match(cacheKey);
-        if (!cachedResponse) {
-          if (!cancelled) setBlobUrl(null);
-          return;
-        }
-
-        const blob = await cachedResponse.blob();
-        const nextUrl = URL.createObjectURL(blob);
-        if (cancelled) {
-          URL.revokeObjectURL(nextUrl);
-          return;
-        }
-
-        objectUrl = nextUrl;
-        setBlobUrl(nextUrl);
-      } catch (error) {
-        if (!cancelled) setBlobUrl(null);
-        console.warn('[HeroBanner] Cache read failed:', error);
-      }
-    };
-
-    loadFromCache();
-
-    return () => {
-      cancelled = true;
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
-    };
-  }, [cacheName, cacheKey, enabled]);
-
-  return blobUrl;
-};
-
-const BannerImage = ({
-  cacheKey,
+function BannerImage({
   src,
   alt,
   isPriority,
 }: {
-  cacheKey: string | null;
   src: string;
   alt: string;
   isPriority: boolean;
-}) => {
-  const blobUrl = useCachedBlobUrl(HERO_IMAGE_CACHE, cacheKey, true);
-  const [imageLoaded, setImageLoaded] = useState(false);
-  const imageSrc = blobUrl ?? src;
+}) {
+  const [loaded, setLoaded] = useState(false);
 
   return (
-    <div className='absolute inset-0 pointer-events-none'>
-      {!imageLoaded && (
-        <div className='absolute inset-0 bg-black/10 animate-pulse pointer-events-none' />
+    <div className='pointer-events-none absolute inset-0'>
+      {!loaded && (
+        <div className='pointer-events-none absolute inset-0 bg-black/10 motion-safe:animate-pulse' />
       )}
       <Image
-        src={imageSrc}
+        src={src}
         alt={alt}
         fill
         className={`object-cover object-center transition-opacity duration-700 ${
-          imageLoaded ? 'opacity-100' : 'opacity-0'
+          loaded ? 'opacity-100' : 'opacity-0'
         }`}
         priority={isPriority}
-        quality={85}
+        loading={isPriority ? 'eager' : 'lazy'}
+        quality={80}
         sizes='100vw'
-        unoptimized={imageSrc.startsWith('blob:')}
-        onLoad={() => setImageLoaded(true)}
+        onLoad={() => setLoaded(true)}
       />
     </div>
   );
-};
+}
 
-const BannerVideo = ({
-  cacheKey,
-  isActive,
+function BannerVideo({
+  doubanId,
   isMuted,
-  onLoad,
-  onError,
 }: {
-  cacheKey: string | null;
-  isActive: boolean;
+  doubanId: number;
   isMuted: boolean;
-  onLoad?: (e: any) => void;
-  onError?: (e: any) => void;
-}) => {
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const blobUrl = useCachedBlobUrl(HERO_VIDEO_CACHE, cacheKey, true);
+  const retryTimerRef = useRef<number | null>(null);
+  const [retryAttempt, setRetryAttempt] = useState(0);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.muted = isMuted;
-    }
+    if (videoRef.current) videoRef.current.muted = isMuted;
   }, [isMuted]);
 
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    if (isActive && blobUrl) {
-      const playPromise = video.play();
-      if (playPromise !== undefined) {
-        playPromise.catch(() => {});
+  useEffect(
+    () => () => {
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
       }
-    } else {
-      video.pause();
-    }
-  }, [isActive, blobUrl]);
+    },
+    [],
+  );
 
-  if (!blobUrl) {
-    return null;
-  }
+  const handleError = () => {
+    setLoaded(false);
+    if (retryAttempt >= MAX_VIDEO_RETRIES || retryTimerRef.current !== null) {
+      return;
+    }
+
+    // carousel 首次请求可能返回 503 并在服务端后台预热。延迟重试，
+    // 不在主线程轮询，也不把完整视频复制进 Cache Storage。
+    retryTimerRef.current = window.setTimeout(() => {
+      retryTimerRef.current = null;
+      setRetryAttempt((attempt) => attempt + 1);
+    }, VIDEO_RETRY_DELAY_MS);
+  };
 
   return (
     <video
+      key={retryAttempt}
       ref={videoRef}
-      className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 pointer-events-none ${
-        isActive ? 'opacity-100' : 'opacity-0'
+      className={`pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-1000 ${
+        loaded ? 'opacity-100' : 'opacity-0'
       }`}
-      autoPlay={isActive}
+      autoPlay
       muted={isMuted}
       loop
       playsInline
       preload='metadata'
-      onError={onError}
-      onLoadedData={onLoad}
-      src={blobUrl}
+      onCanPlay={() => setLoaded(true)}
+      onError={handleError}
+      src={`/api/video-proxy?id=${doubanId}&carousel=1&attempt=${retryAttempt}`}
     />
   );
-};
+}
 
 export default function HeroBanner({
   items,
@@ -292,284 +163,68 @@ export default function HeroBanner({
   const [isHovered, setIsHovered] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
-
-  const itemsRef = useRef(items);
-  const failedImageKeysRef = useRef<Set<string>>(new Set());
-  const failedVideoKeysRef = useRef<Set<string>>(new Set());
-  const downloadingImageKeysRef = useRef<Set<string>>(new Set());
-  const downloadingVideoKeysRef = useRef<Set<string>>(new Set());
+  const [videoReady, setVideoReady] = useState(false);
+  const transitionTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    itemsRef.current = items;
-  }, [items]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof localStorage === 'undefined') {
-      return;
-    }
-
-    const imageKeys = new Set<string>();
-    const videoKeys = new Set<string>();
-
-    items.forEach((item) => {
-      const imageUrl = getImageUrl(item);
-      if (imageUrl) {
-        imageKeys.add(getHeroImageCacheKey(imageUrl));
-      }
-
-      if (enableVideo && item.douban_id) {
-        videoKeys.add(getHeroVideoCacheKey(item.douban_id));
-      }
-    });
-
-    const manifest = {
-      images: Array.from(imageKeys),
-      videos: Array.from(videoKeys),
-      updatedAt: Date.now(),
-    };
-
-    try {
-      localStorage.setItem(
-        HERO_CAROUSEL_MANIFEST_KEY,
-        JSON.stringify(manifest),
-      );
-    } catch (error) {
-      console.warn('[HeroBanner] 轮播缓存清单写入失败:', error);
-    }
-
-    const win = window as typeof window & {
-      __heroCarouselCacheManifest?: typeof manifest;
-    };
-    win.__heroCarouselCacheManifest = manifest;
-  }, [items, enableVideo]);
-
-  useEffect(() => {
-    if (currentIndex >= items.length) {
-      setCurrentIndex(0);
-    }
+    if (currentIndex >= items.length) setCurrentIndex(0);
   }, [currentIndex, items.length]);
 
-  const cacheAsset = useCallback(
-    async (
-      cacheName: string,
-      cacheKey: string,
-      url: string,
-      signal?: AbortSignal,
-    ) => {
-      if (typeof window === 'undefined' || !('caches' in window)) return false;
+  useEffect(() => {
+    setVideoReady(false);
+    if (!enableVideo || !items[currentIndex]?.douban_id) return;
 
-      try {
-        const cache = await caches.open(cacheName);
-        const cachedResponse = await cache.match(cacheKey);
-        if (cachedResponse) return true;
+    const connection = (
+      navigator as Navigator & { connection?: NetworkInformation }
+    ).connection;
+    const isConstrainedNetwork =
+      connection?.saveData === true ||
+      connection?.effectiveType === 'slow-2g' ||
+      connection?.effectiveType === '2g';
+    const delay = isConstrainedNetwork ? 8000 : 2500;
+    const timerId = window.setTimeout(() => setVideoReady(true), delay);
 
-        const response = await fetch(url, {
-          cache: 'no-store',
-          signal,
-        });
+    return () => window.clearTimeout(timerId);
+  }, [currentIndex, enableVideo, items]);
 
-        if (!response.ok) {
-          throw new Error(`${response.status} ${response.statusText}`);
-        }
-
-        await cache.put(cacheKey, response.clone());
-        return true;
-      } catch (error) {
-        if (isAbortError(error, signal)) return false;
-        throw error;
+  useEffect(
+    () => () => {
+      if (transitionTimerRef.current !== null) {
+        window.clearTimeout(transitionTimerRef.current);
       }
     },
     [],
   );
 
-  const downloadImage = useCallback(
-    async (item: BannerItem, signal?: AbortSignal) => {
-      const imageUrl = getImageUrl(item);
-      if (!imageUrl) return;
-
-      const key = toItemKey(item);
-      if (downloadingImageKeysRef.current.has(key)) return;
-
-      downloadingImageKeysRef.current.add(key);
-      try {
-        const cacheKey = getHeroImageCacheKey(imageUrl);
-        const ok = await cacheAsset(
-          HERO_IMAGE_CACHE,
-          cacheKey,
-          imageUrl,
-          signal,
-        );
-        if (ok) {
-          failedImageKeysRef.current.delete(key);
-        }
-      } catch (error) {
-        failedImageKeysRef.current.add(key);
-        console.warn('[HeroBanner] 图片下载失败:', error);
-      } finally {
-        downloadingImageKeysRef.current.delete(key);
-      }
-    },
-    [cacheAsset],
-  );
-
-  const downloadVideo = useCallback(
-    async (item: BannerItem, signal?: AbortSignal) => {
-      if (!enableVideo) return;
-      if (!item.douban_id) return;
-
-      const key = toItemKey(item);
-      if (failedVideoKeysRef.current.has(key)) return;
-      if (downloadingVideoKeysRef.current.has(key)) return;
-
-      downloadingVideoKeysRef.current.add(key);
-      try {
-        const cacheKey = getHeroVideoCacheKey(item.douban_id);
-        const fetchUrl = getVideoFetchUrl(item.douban_id);
-        const ok = await cacheAsset(
-          HERO_VIDEO_CACHE,
-          cacheKey,
-          fetchUrl,
-          signal,
-        );
-        if (ok) {
-          failedVideoKeysRef.current.delete(key);
-        }
-      } catch (error) {
-        failedVideoKeysRef.current.add(key);
-        console.warn('[HeroBanner] 视频下载失败:', error);
-      } finally {
-        downloadingVideoKeysRef.current.delete(key);
-      }
-    },
-    [cacheAsset, enableVideo],
-  );
-
-  const retryFailed = useCallback(() => {
-    const currentItems = itemsRef.current;
-    if (!currentItems.length) return;
-
-    currentItems.forEach((item) => {
-      const key = toItemKey(item);
-
-      if (failedImageKeysRef.current.has(key)) {
-        void downloadImage(item);
-      }
-
-      if (enableVideo && failedVideoKeysRef.current.has(key)) {
-        failedVideoKeysRef.current.delete(key);
-        void downloadVideo(item);
-      }
-    });
-  }, [downloadImage, downloadVideo, enableVideo]);
-
-  useEffect(() => {
-    if (!items.length) return;
-
-    const abortController = new AbortController();
-    const scheduledTask = scheduleBackgroundTask(() => {
-      const warmupImages = async () => {
-        for (const item of items) {
-          if (abortController.signal.aborted) return;
-          await downloadImage(item, abortController.signal);
-        }
-      };
-
-      void warmupImages();
-    });
-
-    return () => {
-      abortController.abort();
-      cancelScheduledTask(scheduledTask);
-    };
-  }, [items, downloadImage]);
-
-  useEffect(() => {
-    if (!items.length) return;
-
-    const currentItem = items[currentIndex];
-    if (!currentItem) return;
-
-    const imageWarmupTask = scheduleBackgroundTask(() => {
-      void downloadImage(currentItem);
-    }, 300);
-    const videoWarmupTask =
-      enableVideo && currentItem.douban_id
-        ? scheduleBackgroundTask(() => {
-            void downloadVideo(currentItem);
-          }, CURRENT_VIDEO_WARMUP_DELAY_MS)
-        : null;
-
-    return () => {
-      cancelScheduledTask(imageWarmupTask);
-      cancelScheduledTask(videoWarmupTask);
-    };
-  }, [currentIndex, items, enableVideo, downloadImage, downloadVideo]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const timerId = window.setInterval(() => {
-      retryFailed();
-    }, RETRY_INTERVAL_MS);
-
-    return () => {
-      window.clearInterval(timerId);
-    };
-  }, [retryFailed]);
-
-  const [renderedIndices, setRenderedIndices] = useState<Set<number>>(() => {
-    if (!items.length) return new Set();
-    const lastIndex = (items.length - 1 + items.length) % items.length;
-    return new Set([0, 1 % items.length, lastIndex]);
-  });
-
-  useEffect(() => {
-    if (!items.length) {
-      setRenderedIndices(new Set());
-      return;
+  const finishTransitionLater = useCallback(() => {
+    if (transitionTimerRef.current !== null) {
+      window.clearTimeout(transitionTimerRef.current);
     }
-
-    const lastIndex = (items.length - 1 + items.length) % items.length;
-    setRenderedIndices(new Set([0, 1 % items.length, lastIndex]));
-  }, [items.length]);
-
-  useEffect(() => {
-    if (!items.length) return;
-
-    setRenderedIndices((prev) => {
-      const nextIndex = (currentIndex + 1) % items.length;
-      const prevIndex = (currentIndex - 1 + items.length) % items.length;
-      const next = new Set(prev);
-      next.add(currentIndex);
-      next.add(nextIndex);
-      next.add(prevIndex);
-      return next;
-    });
-  }, [currentIndex, items.length]);
+    transitionTimerRef.current = window.setTimeout(() => {
+      transitionTimerRef.current = null;
+      setIsTransitioning(false);
+    }, 800);
+  }, []);
 
   const handleNext = useCallback(() => {
     if (isTransitioning || items.length === 0) return;
     setIsTransitioning(true);
-    setCurrentIndex((prev) => (prev + 1) % items.length);
-    setTimeout(() => setIsTransitioning(false), 800);
-  }, [isTransitioning, items.length]);
+    setCurrentIndex((index) => (index + 1) % items.length);
+    finishTransitionLater();
+  }, [finishTransitionLater, isTransitioning, items.length]);
 
   const handlePrev = useCallback(() => {
     if (isTransitioning || items.length === 0) return;
     setIsTransitioning(true);
-    setCurrentIndex((prev) => (prev - 1 + items.length) % items.length);
-    setTimeout(() => setIsTransitioning(false), 800);
-  }, [isTransitioning, items.length]);
+    setCurrentIndex((index) => (index - 1 + items.length) % items.length);
+    finishTransitionLater();
+  }, [finishTransitionLater, isTransitioning, items.length]);
 
   const handleIndicatorClick = (index: number) => {
     if (isTransitioning || index === currentIndex) return;
     setIsTransitioning(true);
     setCurrentIndex(index);
-    setTimeout(() => setIsTransitioning(false), 800);
-  };
-
-  const toggleMute = () => {
-    setIsMuted((prev) => !prev);
+    finishTransitionLater();
   };
 
   useAutoplay({
@@ -585,57 +240,45 @@ export default function HeroBanner({
     onSwipeRight: handlePrev,
   });
 
-  if (!items || items.length === 0) {
-    return null;
-  }
+  if (items.length === 0) return null;
 
   const currentItem = items[currentIndex];
+  const mediaIndices = Array.from(
+    new Set([
+      (currentIndex - 1 + items.length) % items.length,
+      currentIndex,
+      (currentIndex + 1) % items.length,
+    ]),
+  );
   const hasVideo = enableVideo && !!currentItem.douban_id;
 
   return (
     <div
-      className='relative w-full h-[50vh] sm:h-[55vh] md:h-[60vh] overflow-hidden group'
+      className='group relative h-[50vh] w-full overflow-hidden sm:h-[55vh] md:h-[60vh]'
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       {...swipeHandlers}
     >
-      <div className='absolute inset-0 pointer-events-none'>
-        {items.map((item, index) => {
-          const shouldRender = renderedIndices.has(index);
-          if (!shouldRender) return null;
-
-          const imageUrl = getImageUrl(item);
-          const imageCacheKey = imageUrl
-            ? getHeroImageCacheKey(imageUrl)
-            : null;
-          const videoCacheKey =
-            enableVideo && item.douban_id
-              ? getHeroVideoCacheKey(item.douban_id)
-              : null;
+      <div className='pointer-events-none absolute inset-0'>
+        {mediaIndices.map((index) => {
+          const item = items[index];
+          const isCurrent = index === currentIndex;
 
           return (
             <div
               key={item.id}
               className={`absolute inset-0 transition-opacity duration-1000 ease-in-out ${
-                index === currentIndex ? 'opacity-100' : 'opacity-0'
+                isCurrent ? 'opacity-100' : 'opacity-0'
               }`}
             >
               <BannerImage
-                cacheKey={imageCacheKey}
-                src={imageUrl || processImageUrl(item.poster)}
+                src={getImageUrl(item)}
                 alt={item.title}
-                isPriority={index === 0}
+                isPriority={isCurrent}
               />
 
-              {enableVideo && index === currentIndex && (
-                <BannerVideo
-                  cacheKey={videoCacheKey}
-                  isActive={index === currentIndex}
-                  isMuted={isMuted}
-                  onError={() => {
-                    failedVideoKeysRef.current.add(toItemKey(item));
-                  }}
-                />
+              {isCurrent && videoReady && item.douban_id && (
+                <BannerVideo doubanId={item.douban_id} isMuted={isMuted} />
               )}
             </div>
           );
@@ -645,26 +288,26 @@ export default function HeroBanner({
         <div className='absolute inset-0 bg-gradient-to-r from-black/60 via-transparent to-transparent' />
       </div>
 
-      <div className='absolute bottom-0 left-0 right-0 px-4 sm:px-8 md:px-12 lg:px-16 xl:px-20 pb-12 sm:pb-16 md:pb-20 lg:pb-24'>
+      <div className='absolute right-0 bottom-0 left-0 px-4 pb-12 sm:px-8 sm:pb-16 md:px-12 md:pb-20 lg:px-16 lg:pb-24 xl:px-20'>
         <div className='space-y-3 sm:space-y-4 md:space-y-5 lg:space-y-6'>
-          <h1 className='text-3xl sm:text-4xl md:text-5xl lg:text-6xl xl:text-7xl font-bold text-white drop-shadow-2xl leading-tight break-words'>
+          <h1 className='text-3xl leading-tight font-bold break-words text-white drop-shadow-2xl sm:text-4xl md:text-5xl lg:text-6xl xl:text-7xl'>
             {currentItem.title}
           </h1>
 
-          <div className='flex items-center gap-3 sm:gap-4 text-sm sm:text-base md:text-lg flex-wrap'>
+          <div className='flex flex-wrap items-center gap-3 text-sm sm:gap-4 sm:text-base md:text-lg'>
             {currentItem.rate && (
-              <div className='flex items-center gap-1.5 px-2.5 py-1 bg-yellow-500/90 backdrop-blur-sm rounded'>
-                <span className='text-white font-bold'>★</span>
-                <span className='text-white font-bold'>{currentItem.rate}</span>
+              <div className='flex items-center gap-1.5 rounded bg-yellow-500/90 px-2.5 py-1 backdrop-blur-sm'>
+                <span className='font-bold text-white'>★</span>
+                <span className='font-bold text-white'>{currentItem.rate}</span>
               </div>
             )}
             {currentItem.year && (
-              <span className='text-white/90 font-semibold drop-shadow-md'>
+              <span className='font-semibold text-white/90 drop-shadow-md'>
                 {currentItem.year}
               </span>
             )}
             {currentItem.type && (
-              <span className='px-3 py-1 bg-white/20 backdrop-blur-sm rounded text-white/90 font-medium border border-white/30'>
+              <span className='rounded border border-white/30 bg-white/20 px-3 py-1 font-medium text-white/90 backdrop-blur-sm'>
                 {currentItem.type === 'movie'
                   ? '电影'
                   : currentItem.type === 'tv'
@@ -681,22 +324,22 @@ export default function HeroBanner({
           </div>
 
           {currentItem.description && (
-            <p className='text-sm sm:text-base md:text-lg lg:text-xl text-white/90 line-clamp-3 drop-shadow-lg leading-relaxed max-w-xl'>
+            <p className='line-clamp-3 max-w-xl text-sm leading-relaxed text-white/90 drop-shadow-lg sm:text-base md:text-lg lg:text-xl'>
               {currentItem.description}
             </p>
           )}
 
-          <div className='flex gap-3 sm:gap-4 pt-2'>
+          <div className='flex gap-3 pt-2 sm:gap-4'>
             <Link
               href={
                 currentItem.type === 'shortdrama'
                   ? `/play?title=${encodeURIComponent(currentItem.title)}`
                   : `/play?title=${encodeURIComponent(currentItem.title)}${currentItem.year ? `&year=${currentItem.year}` : ''}${currentItem.douban_id ? `&douban_id=${currentItem.douban_id}` : ''}${currentItem.type ? `&stype=${currentItem.type}` : ''}`
               }
-              className='flex items-center gap-2 px-6 sm:px-8 md:px-10 py-2.5 sm:py-3 md:py-4 bg-white text-black font-bold rounded hover:bg-white/90 transition-all transform hover:scale-105 active:scale-95 shadow-xl text-base sm:text-lg md:text-xl'
+              className='flex transform items-center gap-2 rounded bg-white px-6 py-2.5 text-base font-bold text-black shadow-xl transition-all hover:scale-105 hover:bg-white/90 active:scale-95 sm:px-8 sm:py-3 sm:text-lg md:px-10 md:py-4 md:text-xl'
             >
               <Play
-                className='w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7'
+                className='h-5 w-5 sm:h-6 sm:w-6 md:h-7 md:w-7'
                 fill='currentColor'
               />
               <span>播放</span>
@@ -711,9 +354,9 @@ export default function HeroBanner({
                         : currentItem.type || 'movie'
                     }`
               }
-              className='flex items-center gap-2 px-6 sm:px-8 md:px-10 py-2.5 sm:py-3 md:py-4 bg-white/30 backdrop-blur-md text-white font-bold rounded hover:bg-white/40 transition-all transform hover:scale-105 active:scale-95 shadow-xl text-base sm:text-lg md:text-xl border border-white/50'
+              className='flex transform items-center gap-2 rounded border border-white/50 bg-white/30 px-6 py-2.5 text-base font-bold text-white shadow-xl backdrop-blur-md transition-all hover:scale-105 hover:bg-white/40 active:scale-95 sm:px-8 sm:py-3 sm:text-lg md:px-10 md:py-4 md:text-xl'
             >
-              <Info className='w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7' />
+              <Info className='h-5 w-5 sm:h-6 sm:w-6 md:h-7 md:w-7' />
               <span>更多信息</span>
             </Link>
           </div>
@@ -722,14 +365,14 @@ export default function HeroBanner({
 
       {hasVideo && (
         <button
-          onClick={toggleMute}
-          className='absolute bottom-6 sm:bottom-8 right-4 sm:right-8 md:right-12 lg:right-16 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-black/50 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition-all border border-white/50 z-10'
+          onClick={() => setIsMuted((muted) => !muted)}
+          className='absolute right-4 bottom-6 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white/50 bg-black/50 text-white backdrop-blur-sm transition-all hover:bg-black/70 sm:right-8 sm:bottom-8 sm:h-12 sm:w-12 md:right-12 lg:right-16'
           aria-label={isMuted ? '取消静音' : '静音'}
         >
           {isMuted ? (
-            <VolumeX className='w-5 h-5 sm:w-6 sm:h-6' />
+            <VolumeX className='h-5 w-5 sm:h-6 sm:w-6' />
           ) : (
-            <Volume2 className='w-5 h-5 sm:w-6 sm:h-6' />
+            <Volume2 className='h-5 w-5 sm:h-6 sm:w-6' />
           )}
         </button>
       )}
@@ -738,30 +381,30 @@ export default function HeroBanner({
         <>
           <button
             onClick={handlePrev}
-            className='hidden md:flex absolute left-4 lg:left-8 top-1/2 -translate-y-1/2 w-12 h-12 lg:w-14 lg:h-14 rounded-full bg-black/50 backdrop-blur-sm text-white items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-black/70 transition-all transform hover:scale-110 border border-white/30'
+            className='absolute top-1/2 left-4 hidden h-12 w-12 -translate-y-1/2 transform items-center justify-center rounded-full border border-white/30 bg-black/50 text-white opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 hover:scale-110 hover:bg-black/70 md:flex lg:left-8 lg:h-14 lg:w-14'
             aria-label='上一张'
           >
-            <ChevronLeft className='w-7 h-7 lg:w-8 lg:h-8' />
+            <ChevronLeft className='h-7 w-7 lg:h-8 lg:w-8' />
           </button>
           <button
             onClick={handleNext}
-            className='hidden md:flex absolute right-4 lg:right-8 top-1/2 -translate-y-1/2 w-12 h-12 lg:w-14 lg:h-14 rounded-full bg-black/50 backdrop-blur-sm text-white items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-black/70 transition-all transform hover:scale-110 border border-white/30'
+            className='absolute top-1/2 right-4 hidden h-12 w-12 -translate-y-1/2 transform items-center justify-center rounded-full border border-white/30 bg-black/50 text-white opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 hover:scale-110 hover:bg-black/70 md:flex lg:right-8 lg:h-14 lg:w-14'
             aria-label='下一张'
           >
-            <ChevronRight className='w-7 h-7 lg:w-8 lg:h-8' />
+            <ChevronRight className='h-7 w-7 lg:h-8 lg:w-8' />
           </button>
         </>
       )}
 
       {showIndicators && items.length > 1 && (
-        <div className='absolute bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 flex gap-2'>
-          {items.map((_, index) => (
+        <div className='absolute bottom-4 left-1/2 flex -translate-x-1/2 gap-2 sm:bottom-6'>
+          {items.map((item, index) => (
             <button
-              key={index}
+              key={item.id}
               onClick={() => handleIndicatorClick(index)}
               className={`h-1 rounded-full transition-all duration-300 ${
                 index === currentIndex
-                  ? 'w-8 sm:w-10 bg-white shadow-lg'
+                  ? 'w-8 bg-white shadow-lg sm:w-10'
                   : 'w-2 bg-white/50 hover:bg-white/75'
               }`}
               aria-label={`跳转到第 ${index + 1} 张`}
@@ -770,8 +413,8 @@ export default function HeroBanner({
         </div>
       )}
 
-      <div className='absolute top-4 sm:top-6 md:top-8 right-4 sm:right-8 md:right-12'>
-        <div className='px-2 py-1 bg-black/60 backdrop-blur-sm border-2 border-white/70 rounded text-white text-xs sm:text-sm font-bold'>
+      <div className='absolute top-4 right-4 sm:top-6 sm:right-8 md:top-8 md:right-12'>
+        <div className='rounded border-2 border-white/70 bg-black/60 px-2 py-1 text-xs font-bold text-white backdrop-blur-sm sm:text-sm'>
           {currentIndex + 1} / {items.length}
         </div>
       </div>

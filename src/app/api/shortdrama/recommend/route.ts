@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import '@/lib/server-cache';
 
 import { SHORTDRAMA_CACHE_EXPIRE } from '@/lib/cache';
 import { getRecommendedShortDramas } from '@/lib/shortdrama-api';

@@ -51,10 +51,14 @@ interface AuthInfo {
 
 const SETTINGS_RESET_FLAG_KEY = 'settingsResetDone';
 
-export const UserMenu: React.FC = () => {
+interface UserMenuProps {
+  initialOpen?: boolean;
+}
+
+export const UserMenu: React.FC<UserMenuProps> = ({ initialOpen = false }) => {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(initialOpen);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isWatchingUpdatesOpen, setIsWatchingUpdatesOpen] = useState(false);

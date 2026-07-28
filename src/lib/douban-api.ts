@@ -6,13 +6,8 @@ import {
   getDouBanCacheKey,
   setCache,
 } from '@/lib/cache';
-import {
-  DoubanSubjectFetchError,
-  fetchDouBanHtml,
-  fetchDoubanWithAntiScraping,
-} from '@/lib/douban-challenge';
 
-import { PlatformUrl } from '@/app/api/danmu-external/route';
+import type { PlatformUrl } from '@/app/api/danmu-external/route';
 
 import {
   DoubanApiResponse,
@@ -83,6 +78,8 @@ export async function fetchTrailerWithRetry(
   const startTime = Date.now();
 
   try {
+    const { fetchDoubanWithAntiScraping } =
+      await import('@/lib/douban-challenge');
     // 先尝试 movie 端点
     let url = `https://m.douban.com/rexxar/api/v2/movie/${id}`;
     // 添加超时控制
@@ -580,6 +577,7 @@ function selectPlatformLinksFromCache(
 async function fetchDoubanSubjectHtml(doubanId: string): Promise<string> {
   const url = `https://movie.douban.com/subject/${doubanId}`;
   if (typeof window === 'undefined') {
+    const { fetchDouBanHtml } = await import('@/lib/douban-challenge');
     return await fetchDouBanHtml(url, {
       timeoutMs: 10000,
     });
@@ -837,6 +835,7 @@ export async function getDoubanActorMovies(
 
     let html: string;
     if (typeof window === 'undefined') {
+      const { fetchDouBanHtml } = await import('@/lib/douban-challenge');
       html = await fetchDouBanHtml(searchUrl, {
         timeoutMs: 10000,
       });
@@ -943,9 +942,9 @@ export async function getExtractPlatformUrls(
     const { platformLinks } = await fetchDoubanSubjectAndCache(doubanId);
     return selectPlatformLinksFromCache(platformLinks, episode);
   } catch (error) {
-    if (error instanceof DoubanSubjectFetchError) {
+    if (error instanceof Error && error.name === 'DoubanSubjectFetchError') {
       console.error(
-        `Douban subject request failed: ${error.status ?? 'unknown'}`,
+        `Douban subject request failed: ${'status' in error ? (error.status ?? 'unknown') : 'unknown'}`,
         error.message,
       );
     } else if (error instanceof DOMException && error.name === 'AbortError') {
@@ -966,6 +965,8 @@ export async function fetchDoubanData<T>(url: string): Promise<T> {
   // 添加超时控制
   const controller = new AbortController();
   try {
+    const { fetchDoubanWithAntiScraping } =
+      await import('@/lib/douban-challenge');
     let response = await fetchDoubanWithAntiScraping(url, {
       signal: controller.signal,
       timeoutMs: 10000,

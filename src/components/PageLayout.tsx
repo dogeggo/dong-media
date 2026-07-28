@@ -1,9 +1,9 @@
 'use client';
 
+import { DeferredUserMenu } from './DeferredUserMenu';
 import ModernNav from './ModernNav';
 import { useSite } from './SiteProvider';
 import { ThemeToggle } from './ThemeToggle';
-import { UserMenu } from './UserMenu';
 
 interface PageLayoutProps {
   children: React.ReactNode;
@@ -29,11 +29,14 @@ const PageLayout = ({ children, activePath = '/' }: PageLayoutProps) => {
             </div>
 
             {/* Theme Toggle & User Menu */}
-            <div className='flex items-center gap-1.5'>
-              <ThemeToggle />
-              <UserMenu />
-            </div>
+            <div className='w-[88px]' aria-hidden='true' />
           </div>
+        </div>
+
+        {/* 全端共用一组操作，避免 CSS 隐藏的重复组件仍执行副作用。 */}
+        <div className='fixed top-0 right-4 z-50 flex h-11 items-center gap-1.5 md:right-6 md:h-14 lg:right-12 xl:right-16 2xl:right-20'>
+          <ThemeToggle />
+          <DeferredUserMenu />
         </div>
 
         {/* Main Content - 移动端44px顶部 + 底部导航栏空间,桌面端64px */}

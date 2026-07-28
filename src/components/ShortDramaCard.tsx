@@ -11,8 +11,8 @@ import {
   saveFavorite,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
+import { processImageUrl } from '@/lib/image-url';
 import { ShortDramaItem } from '@/lib/types';
-import { processImageUrl } from '@/lib/utils';
 
 import { POSTER_FALLBACK } from '@/components/CardPoster';
 

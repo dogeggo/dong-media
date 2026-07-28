@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { getCache, setCache } from '@/lib/cache';
 import { db } from '@/lib/db';
+import { getCache, setCache } from '@/lib/server-cache';
 
 export async function GET(request: NextRequest) {
   try {

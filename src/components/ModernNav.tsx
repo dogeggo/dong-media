@@ -19,8 +19,6 @@ import { useEffect, useState } from 'react';
 
 import { FastLink } from './FastLink';
 import { useSite } from './SiteProvider';
-import { ThemeToggle } from './ThemeToggle';
-import { UserMenu } from './UserMenu';
 
 interface NavItem {
   icon: any;
@@ -191,10 +189,7 @@ export default function ModernNav() {
             </div>
 
             {/* Right Side Actions */}
-            <div className='flex items-center gap-1.5 shrink-0'>
-              <ThemeToggle />
-              <UserMenu />
-            </div>
+            <div className='w-[88px] shrink-0' aria-hidden='true' />
           </div>
         </div>
         {/* Bottom border line */}

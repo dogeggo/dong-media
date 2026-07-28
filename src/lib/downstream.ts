@@ -1,5 +1,6 @@
-﻿import { getCache, SEARCH_CACHE_EXPIRE, setCache } from '@/lib/cache';
+﻿import { SEARCH_CACHE_EXPIRE } from '@/lib/cache';
 import { API_CONFIG, ApiSite, getShowAdultContent } from '@/lib/config';
+import { getCache, setCache } from '@/lib/server-cache';
 import { SearchResult } from '@/lib/types';
 import { cleanHtmlTags } from '@/lib/utils';
 import { yellowWords } from '@/lib/yellow';

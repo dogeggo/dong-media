@@ -8,7 +8,7 @@ import { loadConfig } from '@/lib/config';
 import { serializeInlineJson } from '@/lib/inline-json';
 
 import CacheCleaner from '../components/CacheCleaner';
-import { DownloadPanel } from '../components/download/DownloadPanel';
+import { DeferredDownloadPanel } from '../components/download/DeferredDownloadPanel';
 import { GlobalErrorIndicator } from '../components/GlobalErrorIndicator';
 import NavigationLoading from '../components/NavigationLoading';
 import QueryProvider from '../components/QueryProvider';
@@ -26,9 +26,9 @@ export async function generateMetadata(): Promise<Metadata> {
   await cookies();
 
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
-  const config = await loadConfig();
   let siteName = process.env.NEXT_PUBLIC_SITE_NAME || 'Dong Media';
   if (storageType !== 'localstorage') {
+    const config = await loadConfig();
     siteName = config.SiteConfig.SiteName;
   }
 
@@ -122,7 +122,7 @@ export default async function RootLayout({
                   <GlobalErrorIndicator />
                   <NavigationLoading />
                 </SiteProvider>
-                <DownloadPanel />
+                <DeferredDownloadPanel />
               </DownloadProvider>
             </NavigationLoadingProvider>
           </QueryProvider>

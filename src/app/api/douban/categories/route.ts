@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import '@/lib/server-cache';
 
 import { DOUBAN_CACHE_EXPIRE } from '@/lib/cache';
 import { getDoubanCategories } from '@/lib/douban-api';

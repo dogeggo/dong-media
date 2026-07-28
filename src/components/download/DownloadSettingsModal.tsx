@@ -2,8 +2,12 @@
 
 import React from 'react';
 
-import type { StreamModeSupport, StreamSaverMode } from '@/lib/download';
-import { getStreamModeDescription, getStreamModeName } from '@/lib/download';
+import type { StreamSaverMode } from '@/lib/download';
+import {
+  getStreamModeDescription,
+  getStreamModeName,
+  type StreamModeSupport,
+} from '@/lib/download/stream-mode-detector';
 
 import type { DownloadSettings } from '@/contexts/DownloadContext';
 

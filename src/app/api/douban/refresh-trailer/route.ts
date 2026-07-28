@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import '@/lib/server-cache';
 
 import { fetchTrailerWithRetry } from '@/lib/douban-api';
 

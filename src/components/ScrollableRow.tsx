@@ -36,6 +36,9 @@ function ScrollableRow({
   const checkScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const scrollFrameRef = useRef<number | null>(null);
+  const itemStrideRef = useRef(0);
+  const firstItemOffsetRef = useRef(0);
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 8 });
   const [focusedVirtualIndex, setFocusedVirtualIndex] = useState<number | null>(
     null,
@@ -45,9 +48,22 @@ function ScrollableRow({
   // 使用 useMemo 缓存 children 数量，减少不必要的 effect 触发
   const childrenCount = useMemo(() => Children.count(children), [children]);
 
+  const measureVirtualItems = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || container.children.length === 0) return;
+
+    const first = container.children[0] as HTMLElement;
+    const second = container.children[1] as HTMLElement | undefined;
+    firstItemOffsetRef.current = first.offsetLeft;
+    itemStrideRef.current = second
+      ? second.offsetLeft - first.offsetLeft
+      : first.offsetWidth;
+  }, []);
+
   const checkScroll = useCallback(() => {
-    if (containerRef.current) {
-      const { scrollWidth, clientWidth, scrollLeft } = containerRef.current;
+    const container = containerRef.current;
+    if (container) {
+      const { scrollWidth, clientWidth, scrollLeft } = container;
 
       // 计算是否需要左右滚动按钮
       const threshold = 1; // 容差值，避免浮点误差
@@ -62,41 +78,23 @@ function ScrollableRow({
         prev !== canScrollLeft ? canScrollLeft : prev,
       );
 
-      // 虚拟化：精确计算可见范围（参考 react-window 实现）
-      if (shouldVirtualize && containerRef.current.children.length > 0) {
+      if (shouldVirtualize && itemStrideRef.current > 0) {
         const overscan = 3;
-        const viewportStart = scrollLeft;
-        const viewportEnd = scrollLeft + clientWidth;
-
-        let startIndexVisible = 0;
-        let stopIndexVisible = childrenCount - 1;
-
-        // 查找第一个可见元素
-        for (let i = 0; i < containerRef.current.children.length; i++) {
-          const child = containerRef.current.children[i] as HTMLElement;
-          const offsetLeft = child.offsetLeft;
-          const offsetWidth = child.offsetWidth;
-
-          if (offsetLeft + offsetWidth > viewportStart) {
-            startIndexVisible = i;
-            break;
-          }
-        }
-
-        // 查找最后一个可见元素
-        for (
-          let i = startIndexVisible;
-          i < containerRef.current.children.length;
-          i++
-        ) {
-          const child = containerRef.current.children[i] as HTMLElement;
-          const offsetLeft = child.offsetLeft;
-
-          if (offsetLeft >= viewportEnd) {
-            stopIndexVisible = i - 1;
-            break;
-          }
-        }
+        const relativeStart = Math.max(
+          0,
+          scrollLeft - firstItemOffsetRef.current,
+        );
+        const relativeEnd = Math.max(
+          0,
+          scrollLeft + clientWidth - firstItemOffsetRef.current,
+        );
+        const startIndexVisible = Math.floor(
+          relativeStart / itemStrideRef.current,
+        );
+        const stopIndexVisible = Math.min(
+          childrenCount - 1,
+          Math.ceil(relativeEnd / itemStrideRef.current),
+        );
 
         const start = Math.max(0, startIndexVisible - overscan);
         const end = Math.min(childrenCount, stopIndexVisible + overscan + 1);
@@ -110,6 +108,14 @@ function ScrollableRow({
       }
     }
   }, [shouldVirtualize, childrenCount]);
+
+  const scheduleScrollCheck = useCallback(() => {
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      checkScroll();
+    });
+  }, [checkScroll]);
 
   // 保留所有轻量槽位来维持准确滚动宽度，只挂载可见区域及 overscan 内的重型子组件。
   const visibleChildren = useMemo(() => {
@@ -155,6 +161,7 @@ function ScrollableRow({
       checkScrollTimeoutRef.current = null;
     }
     checkScrollTimeoutRef.current = setTimeout(() => {
+      measureVirtualItems();
       checkScroll();
     }, 100);
 
@@ -164,7 +171,10 @@ function ScrollableRow({
       if (resizeTimeout) {
         clearTimeout(resizeTimeout);
       }
-      resizeTimeout = setTimeout(checkScroll, 200); // 增加防抖时间从150ms到200ms
+      resizeTimeout = setTimeout(() => {
+        measureVirtualItems();
+        checkScroll();
+      }, 200);
     };
 
     window.addEventListener('resize', handleResize, { passive: true }); // 使用 passive 优化
@@ -178,7 +188,10 @@ function ScrollableRow({
           clearTimeout(checkScrollTimeoutRef.current);
           checkScrollTimeoutRef.current = null;
         }
-        checkScrollTimeoutRef.current = setTimeout(checkScroll, 150);
+        checkScrollTimeoutRef.current = setTimeout(() => {
+          measureVirtualItems();
+          checkScroll();
+        }, 150);
       });
 
       if (containerRef.current) {
@@ -195,8 +208,11 @@ function ScrollableRow({
       if (checkScrollTimeoutRef.current) {
         clearTimeout(checkScrollTimeoutRef.current);
       }
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+      }
     };
-  }, [childrenCount, checkScroll]);
+  }, [childrenCount, checkScroll, measureVirtualItems]);
 
   const handleScrollRightClick = useCallback(() => {
     if (containerRef.current) {
@@ -229,7 +245,7 @@ function ScrollableRow({
       <div
         ref={containerRef}
         className='flex space-x-6 overflow-x-auto scrollbar-hide pt-3 pb-12 sm:pt-4 sm:pb-14 px-4 sm:px-6'
-        onScroll={checkScroll}
+        onScroll={scheduleScrollCheck}
         onFocusCapture={(event) => {
           if (!shouldVirtualize) return;
 
@@ -251,8 +267,6 @@ function ScrollableRow({
         }}
         style={{
           WebkitOverflowScrolling: 'touch', // iOS 惯性滚动
-          willChange: 'scroll-position', // 提示浏览器优化滚动
-          transform: 'translateZ(0)', // 启用 GPU 硬件加速
         }}
       >
         {enableAnimation ? (

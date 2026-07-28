@@ -2,8 +2,11 @@
 
 import React from 'react';
 
-import { M3U8DownloadTask } from '@/lib/download';
-import { getStreamModeIcon, getStreamModeName } from '@/lib/download';
+import type { M3U8DownloadTask } from '@/lib/download';
+import {
+  getStreamModeIcon,
+  getStreamModeName,
+} from '@/lib/download/stream-mode-detector';
 import { formatTime } from '@/lib/time';
 
 import { useDownload } from '@/contexts/DownloadContext';

@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
 
-import { DOUBAN_CACHE_EXPIRE, getCache, setCache } from '@/lib/cache';
+import { DOUBAN_CACHE_EXPIRE } from '@/lib/cache';
 import { db } from '@/lib/db';
 import {
   DoubanError,
   fetchTrailerWithRetry,
   getDoubanDetails,
 } from '@/lib/douban-api';
+import { getCache, setCache } from '@/lib/server-cache';
 
 export const runtime = 'nodejs';
 const failureCacheSeconds = DOUBAN_CACHE_EXPIRE.details_failure;

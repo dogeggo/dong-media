@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import '@/lib/server-cache';
 
 import { SEARCH_CACHE_EXPIRE } from '@/lib/cache';
 import { searchShortDramas } from '@/lib/shortdrama-api';

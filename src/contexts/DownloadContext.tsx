@@ -9,11 +9,9 @@ import React, {
   useState,
 } from 'react';
 
-import type { DownloadProgress } from '@/lib/download';
-import {
-  downloadM3U8Video,
+import type {
+  DownloadProgress,
   M3U8DownloadTask,
-  parseM3U8,
   PauseResumeController,
   StreamSaverMode,
 } from '@/lib/download';
@@ -22,6 +20,14 @@ import {
   getBestStreamMode,
   type StreamModeSupport,
 } from '@/lib/download/stream-mode-detector';
+
+let downloadRuntimePromise: Promise<typeof import('@/lib/download')> | null =
+  null;
+
+function loadDownloadRuntime() {
+  downloadRuntimePromise ??= import('@/lib/download');
+  return downloadRuntimePromise;
+}
 
 export interface DownloadSettings {
   concurrency: number; // 并发线程数
@@ -55,6 +61,7 @@ const DownloadContext = createContext<DownloadContextType | undefined>(
 
 export function DownloadProvider({ children }: { children: React.ReactNode }) {
   const [tasks, setTasks] = useState<M3U8DownloadTask[]>([]);
+  const tasksRef = useRef<M3U8DownloadTask[]>([]);
   const [showDownloadPanel, setShowDownloadPanel] = useState(false);
   const [streamModeSupport, setStreamModeSupport] = useState<StreamModeSupport>(
     {
@@ -122,50 +129,22 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
 
   const updateTask = useCallback(
     (taskId: string, updates: Partial<M3U8DownloadTask>) => {
-      setTasks((prev) =>
-        prev.map((task) =>
-          task.id === taskId ? { ...task, ...updates } : task,
-        ),
+      const nextTasks = tasksRef.current.map((task) =>
+        task.id === taskId ? { ...task, ...updates } : task,
       );
-    },
-    [],
-  );
-
-  const createTask = useCallback(
-    async (url: string, title: string, type: 'TS' | 'MP4' = 'TS') => {
-      try {
-        // 解析 M3U8
-        const m3u8Task = await parseM3U8(url);
-
-        // 创建任务对象
-        const taskId = `task_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        const newTask: M3U8DownloadTask = {
-          ...m3u8Task,
-          id: taskId,
-          title,
-          type,
-          status: 'ready',
-        };
-
-        setTasks((prev) => [...prev, newTask]);
-
-        // 自动开始下载
-        await startTask(taskId);
-
-        // 显示下载面板
-        setShowDownloadPanel(true);
-      } catch (error) {
-        console.error('创建下载任务失败:', error);
-        throw error;
-      }
+      tasksRef.current = nextTasks;
+      setTasks(nextTasks);
     },
     [],
   );
 
   const startTask = useCallback(
     async (taskId: string) => {
-      const task = tasks.find((t) => t.id === taskId);
+      const task = tasksRef.current.find((item) => item.id === taskId);
       if (!task) return;
+
+      const { downloadM3U8Video, PauseResumeController } =
+        await loadDownloadRuntime();
 
       // 创建新的控制器
       const pauseController = new PauseResumeController();
@@ -210,7 +189,37 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
         taskControllers.current.delete(taskId);
       }
     },
-    [tasks, updateTask, settings],
+    [settings, updateTask],
+  );
+
+  const createTask = useCallback(
+    async (url: string, title: string, type: 'TS' | 'MP4' = 'TS') => {
+      try {
+        const { parseM3U8 } = await loadDownloadRuntime();
+        const m3u8Task = await parseM3U8(url);
+
+        const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+        const newTask: M3U8DownloadTask = {
+          ...m3u8Task,
+          id: taskId,
+          title,
+          type,
+          status: 'ready',
+        };
+
+        const nextTasks = [...tasksRef.current, newTask];
+        tasksRef.current = nextTasks;
+        setTasks(nextTasks);
+
+        setShowDownloadPanel(true);
+        // 任务先进入同步 ref，再启动，避免读取到 React 的旧闭包。
+        await startTask(taskId);
+      } catch (error) {
+        console.error('创建下载任务失败:', error);
+        throw error;
+      }
+    },
+    [startTask],
   );
 
   const pauseTask = useCallback(
@@ -231,13 +240,14 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
       taskControllers.current.delete(taskId);
     }
 
-    // 从任务列表中移除
-    setTasks((prev) => prev.filter((task) => task.id !== taskId));
+    const nextTasks = tasksRef.current.filter((task) => task.id !== taskId);
+    tasksRef.current = nextTasks;
+    setTasks(nextTasks);
   }, []);
 
   const retryFailedSegments = useCallback(
     async (taskId: string) => {
-      const task = tasks.find((t) => t.id === taskId);
+      const task = tasksRef.current.find((item) => item.id === taskId);
       if (!task) return;
 
       // 重置错误计数
@@ -246,7 +256,7 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
       // 重新开始下载
       await startTask(taskId);
     },
-    [tasks, updateTask, startTask],
+    [startTask, updateTask],
   );
 
   const getProgress = useCallback(

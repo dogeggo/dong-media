@@ -6,7 +6,7 @@ import { initCacheCleaner } from '@/lib/cache';
 
 export default function CacheCleaner() {
   useEffect(() => {
-    void initCacheCleaner();
+    initCacheCleaner();
   }, []);
 
   return null;

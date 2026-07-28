@@ -523,11 +523,6 @@ async function handleDatabaseOperationFailure(
   }
 }
 
-// 页面加载时清理过期缓存
-if (typeof window !== 'undefined') {
-  setTimeout(() => cacheManager.clearExpiredCaches(), 1000);
-}
-
 // ---- 工具函数 ----
 /**
  * 创建带超时的 fetch 请求

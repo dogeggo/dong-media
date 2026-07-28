@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { getCache, setCache } from '@/lib/cache';
 import { getCacheTime } from '@/lib/config';
 import { authenticateRequest } from '@/lib/request-auth';
 import { safeFetch } from '@/lib/safe-upstream-url';
+import { getCache, setCache } from '@/lib/server-cache';
 import { processImageUrl } from '@/lib/utils';
 
 /**

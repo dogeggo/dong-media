@@ -1,13 +1,9 @@
 import { NextResponse } from 'next/server';
 
-import {
-  DOUBAN_CACHE_EXPIRE,
-  getCache,
-  getDouBanCacheKey,
-  setCache,
-} from '@/lib/cache';
+import { DOUBAN_CACHE_EXPIRE, getDouBanCacheKey } from '@/lib/cache';
 import { getDoubanList } from '@/lib/douban-api';
 import { fetchDouBanHtml } from '@/lib/douban-challenge';
+import { getCache, setCache } from '@/lib/server-cache';
 import { DoubanMovieDetail, DoubanResult } from '@/lib/types';
 
 export const runtime = 'nodejs';

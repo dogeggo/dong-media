@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { getCache, NETDISK_CACHE_EXPIRE, setCache } from '@/lib/cache';
+import { NETDISK_CACHE_EXPIRE } from '@/lib/cache';
 import { loadConfig } from '@/lib/config';
+import { getCache, setCache } from '@/lib/server-cache';
 
 export const runtime = 'nodejs';
 

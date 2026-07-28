@@ -1,8 +1,9 @@
 import { type ClassValue, clsx } from 'clsx';
 import he from 'he';
-import Hls from 'hls.js';
 import stcasc, { ChineseType } from 'switch-chinese';
 import { twMerge } from 'tailwind-merge';
+
+export { processImageUrl } from './image-url';
 
 /**
  * Utility function for merging Tailwind CSS classes
@@ -87,20 +88,6 @@ export {
 };
 
 /**
- * 处理图片 URL，如果设置了图片代理则使用代理
- */
-export function processImageUrl(originalUrl: string): string {
-  if (!originalUrl) return originalUrl;
-
-  // 如果是本地资源（以 / 开头），直接返回，不走代理
-  if (originalUrl.startsWith('/')) {
-    return originalUrl;
-  }
-
-  return `/api/image-proxy?url=${encodeURIComponent(originalUrl)}`;
-}
-
-/**
  * 从m3u8地址获取视频质量等级和网络信息
  * @param m3u8Url m3u8播放列表的URL
  * @returns Promise<{quality: string, loadSpeed: string, pingTime: number}> 视频质量等级和网络信息
@@ -140,6 +127,10 @@ export async function getVideoResolutionFromM3u8(m3u8Url: string): Promise<{
         };
       }
     }
+
+    // HLS 只在用户实际发起测速时加载，避免图片 URL 等轻量工具把
+    // 整个播放器运行时带进所有页面的首屏资源。
+    const { default: Hls } = await import('hls.js');
 
     // 非iPad设备使用优化后的测速逻辑
     return new Promise((resolve, reject) => {

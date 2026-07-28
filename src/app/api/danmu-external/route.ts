@@ -2,8 +2,9 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
-import { DOUBAN_CACHE_EXPIRE, getCache, setCache } from '@/lib/cache';
+import { DOUBAN_CACHE_EXPIRE } from '@/lib/cache';
 import { getExtractPlatformUrls } from '@/lib/douban-api';
+import { getCache, setCache } from '@/lib/server-cache';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
 export interface PlatformUrl {

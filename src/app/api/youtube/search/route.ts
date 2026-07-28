@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { getCache, setCache, YOUTUBE_CACHE_EXPIRE } from '@/lib/cache';
+import { YOUTUBE_CACHE_EXPIRE } from '@/lib/cache';
 import { hasSpecialFeaturePermission, loadConfig } from '@/lib/config';
+import { getCache, setCache } from '@/lib/server-cache';
 
 export const runtime = 'nodejs';
 

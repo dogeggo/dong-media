@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { getCache, setCache } from '@/lib/cache';
 import { getShowAdultContent, loadConfig } from '@/lib/config';
+import { getCache, setCache } from '@/lib/server-cache';
 import { getSiteOrigin } from '@/lib/site-origin';
 import { getCandidates, getSpiderJar } from '@/lib/spiderJar';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';

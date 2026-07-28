@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import path from 'path';
 import stream from 'stream';
 import { promisify } from 'util';
+import '@/lib/server-cache';
 
 import { getCacheTime } from '@/lib/config';
 import { fetchTrailerWithRetry } from '@/lib/douban-api';
