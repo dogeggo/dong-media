@@ -6,6 +6,7 @@ import { rateLimiter } from '@/lib/rate-limiter';
 import { getSiteOrigin } from '@/lib/site-origin';
 import { getSpiderJar } from '@/lib/spiderJar';
 import { resolveTVBoxUser } from '@/lib/tvbox-auth';
+import { getTVBoxCategories } from '@/lib/tvbox-categories';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
 // 生产环境使用Redis/Kvrocks的频率限制
@@ -238,9 +239,6 @@ export async function GET(request: NextRequest) {
 
     // 与站内账号共用唯一一套源权限：个人 enabledApis > 用户组 > 默认用户组。
     const enabledSources = await getAvailableApiSites(user.username);
-    console.log(
-      `[TVBox] 用户 ${user.username} 使用账号源权限，可访问 ${enabledSources.length} 个源`,
-    );
 
     // 转换为TVBox格式
     let tvboxConfig: TVBoxConfig = {
@@ -360,76 +358,10 @@ export async function GET(request: NextRequest) {
             siteRetry = 1; // 重试1次
           }
 
-          // 动态获取源站分类（使用并发控制）
-          let categories: string[] = [
-            '电影',
-            '电视剧',
-            '综艺',
-            '动漫',
-            '纪录片',
-            '短剧',
-          ]; // 默认分类
-
-          categories = await categoriesLimiter.run(async () => {
-            try {
-              // 尝试获取源站的分类数据
-              const categoriesUrl = `${source.api}?ac=list`;
-              const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
-
-              const response = await fetch(categoriesUrl, {
-                signal: controller.signal,
-                headers: {
-                  'User-Agent': 'TVBox/1.0.0',
-                },
-              });
-
-              clearTimeout(timeoutId);
-
-              if (response.ok) {
-                const data = await response.json();
-                if (data.class && Array.isArray(data.class)) {
-                  return data.class
-                    .map((cat: any) => cat.type_name || cat.name)
-                    .filter((name: string) => name);
-                }
-              }
-            } catch (error) {
-              // 优化的错误处理：区分不同类型的错误
-              if (error instanceof Error) {
-                if (error.name === 'AbortError') {
-                  console.warn(
-                    `[TVBox] 获取源站 ${source.name} 分类超时(10s)，使用默认分类`,
-                  );
-                } else if (
-                  error.message.includes('JSON') ||
-                  error.message.includes('parse')
-                ) {
-                  console.warn(
-                    `[TVBox] 源站 ${source.name} 返回的分类数据格式错误，使用默认分类`,
-                  );
-                } else if (
-                  error.message.includes('ENOTFOUND') ||
-                  error.message.includes('ECONNREFUSED')
-                ) {
-                  console.warn(
-                    `[TVBox] 无法连接到源站 ${source.name}，使用默认分类`,
-                  );
-                } else {
-                  console.warn(
-                    `[TVBox] 获取源站 ${source.name} 分类失败: ${error.message}，使用默认分类`,
-                  );
-                }
-              } else {
-                console.warn(
-                  `[TVBox] 获取源站 ${source.name} 分类失败（未知错误），使用默认分类`,
-                );
-              }
-            }
-
-            // 返回默认分类
-            return ['电影', '电视剧', '综艺', '动漫', '纪录片', '短剧'];
-          });
+          // 分类发现是可选增强项；异常上游会静默使用已缓存的默认分类。
+          const categories = await categoriesLimiter.run(() =>
+            getTVBoxCategories(source.api),
+          );
 
           // 🔑 Cloudflare Worker 代理：为每个源生成唯一的代理路径
           let finalApi = source.api;
