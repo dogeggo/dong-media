@@ -1,7 +1,6 @@
 /* eslint-disable no-console */
 
-import { unstable_noStore } from 'next/cache';
-
+import { CACHE_POLICIES, cacheService } from '@/lib/cache-system';
 import { db } from '@/lib/db';
 
 import { normalizeAdFilterConfig } from './ad-filter';
@@ -25,7 +24,6 @@ export interface LiveCfg {
 }
 
 interface ConfigFileStruct {
-  cache_time?: number;
   api_site?: {
     [key: string]: ApiSite;
   };
@@ -219,7 +217,6 @@ async function getInitConfig(
         '本网站仅提供影视信息搜索服务，所有内容均来自第三方网站。本站不存储任何视频资源，不对任何内容的准确性、合法性、完整性负责。',
       SearchDownstreamMaxPage:
         Number(process.env.NEXT_PUBLIC_SEARCH_MAX_PAGE) || 5,
-      SiteInterfaceCacheTime: cfgFile.cache_time || 7200,
       ShowAdultContent: false, // 默认不显示成人内容，可在管理面板修改
       FluidSearch: process.env.NEXT_PUBLIC_FLUID_SEARCH !== 'false',
       // TMDB配置默认值
@@ -303,28 +300,24 @@ async function getInitConfig(
 }
 
 export async function loadConfig(): Promise<AdminConfig> {
-  // 🔥 防止 Next.js 在 Docker 环境下缓存配置（解决站点名称更新问题）
-  unstable_noStore();
-
-  // 🔥 完全移除内存缓存检查 - Docker 环境下模块级变量不会被清除
-  // 参考：https://nextjs.org/docs/app/guides/memory-usage
-  // 每次都从数据库读取最新配置，确保动态配置立即生效
-
-  // 读 db
-  let adminConfig: AdminConfig | null = null;
-  try {
-    adminConfig = await db.getAdminConfig();
-  } catch (e) {
-    console.error('获取管理员配置失败:', e);
-  }
-
-  // db 中无配置，执行一次初始化
-  if (!adminConfig) {
-    adminConfig = await getInitConfig('');
-  }
-  adminConfig = await configSelfCheck(adminConfig);
-
-  return adminConfig;
+  const config = await cacheService.getOrLoad(
+    CACHE_POLICIES.CONFIG_SERVER,
+    { projection: 'full' },
+    async () => {
+      let adminConfig: AdminConfig | null;
+      try {
+        adminConfig = await db.getAdminConfig();
+      } catch (error) {
+        console.error('获取管理员配置失败:', error);
+        throw error;
+      }
+      if (!adminConfig) adminConfig = await getInitConfig('');
+      return configSelfCheck(adminConfig);
+    },
+  );
+  // 管理接口会原地修改配置对象。缓存中保留规范副本，只把独立副本交给
+  // 调用方，避免保存失败或并发写入污染 L1/L2 中尚未持久化的配置。
+  return structuredClone(config);
 }
 
 export async function configSelfCheck(
@@ -348,6 +341,10 @@ export async function configSelfCheck(
   }
   if ('CustomAdFilterVersion' in siteConfig) {
     delete siteConfig.CustomAdFilterVersion;
+    hasChanges = true;
+  }
+  if ('SiteInterfaceCacheTime' in siteConfig) {
+    delete siteConfig.SiteInterfaceCacheTime;
     hasChanges = true;
   }
   if (!adminConfig.SiteConfig.AdFilterConfig) hasChanges = true;
@@ -615,11 +612,6 @@ export async function resetConfig() {
   return;
 }
 
-export async function getCacheTime(): Promise<number> {
-  const config = await loadConfig();
-  return config.SiteConfig.SiteInterfaceCacheTime || 14400;
-}
-
 // Helper function to apply VideoProxyConfig to API sites
 function applyVideoProxy(sites: ApiSite[], config: AdminConfig): ApiSite[] {
   const proxyConfig = config.VideoProxyConfig;
@@ -733,7 +725,7 @@ export async function getAvailableApiSites(
   const config = await loadConfig();
 
   // 确定成人内容显示权限，优先级：用户 > 用户组 > 全局
-  let showAdultContent = getShowAdultContent(userName);
+  const showAdultContent = await getShowAdultContent(userName);
 
   // 过滤掉禁用的源，如果未启用成人内容则同时过滤掉成人资源
   const allApiSites = config.SourceConfig.filter((s) => {

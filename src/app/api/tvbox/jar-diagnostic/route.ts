@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { safeFetch } from '@/lib/safe-upstream-url';
 import { getAllCandidates } from '@/lib/spiderJar';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
@@ -297,9 +298,8 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json(report, {
     status: 200,
-    headers: {
+    headers: noStoreResponseHeaders({
       'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-    },
+    }),
   });
 }

@@ -7,7 +7,6 @@ import './globals.css';
 import { loadConfig } from '@/lib/config';
 import { serializeInlineJson } from '@/lib/inline-json';
 
-import CacheCleaner from '../components/CacheCleaner';
 import { DeferredDownloadPanel } from '../components/download/DeferredDownloadPanel';
 import { GlobalErrorIndicator } from '../components/GlobalErrorIndicator';
 import NavigationLoading from '../components/NavigationLoading';
@@ -117,7 +116,6 @@ export default async function RootLayout({
             <NavigationLoadingProvider>
               <DownloadProvider>
                 <SiteProvider siteName={siteName} announcement={announcement}>
-                  <CacheCleaner />
                   {children}
                   <GlobalErrorIndicator />
                   <NavigationLoading />

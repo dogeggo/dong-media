@@ -3,18 +3,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { PlayRecord } from '@/lib/types';
 
 export const runtime = 'nodejs';
 
+function json(body: unknown, init?: ResponseInit) {
+  return NextResponse.json(body, {
+    ...init,
+    headers: noStoreResponseHeaders(init?.headers),
+  });
+}
+
 export async function GET(request: NextRequest) {
   try {
     // 从 cookie 获取用户信息
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const config = await loadConfig();
@@ -24,32 +32,27 @@ export async function GET(request: NextRequest) {
         (u) => u.username === authInfo.username,
       );
       if (!user) {
-        return NextResponse.json({ error: '用户不存在' }, { status: 401 });
+        return json({ error: '用户不存在' }, { status: 401 });
       }
       if (user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
+        return json({ error: '用户已被封禁' }, { status: 401 });
       }
     }
 
     const records = await db.getAllPlayRecords(authInfo.username);
-    return NextResponse.json(records, { status: 200 });
+    return json(records, { status: 200 });
   } catch (err) {
     console.error('获取播放记录失败', err);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 },
-    );
+    return json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }
-
-const userMovieHisMap = new Map<string, string>();
 
 export async function POST(request: NextRequest) {
   try {
     // 从 cookie 获取用户信息
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const config = await loadConfig();
@@ -59,10 +62,10 @@ export async function POST(request: NextRequest) {
         (u) => u.username === authInfo.username,
       );
       if (!user) {
-        return NextResponse.json({ error: '用户不存在' }, { status: 401 });
+        return json({ error: '用户不存在' }, { status: 401 });
       }
       if (user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
+        return json({ error: '用户已被封禁' }, { status: 401 });
       }
     }
 
@@ -70,27 +73,18 @@ export async function POST(request: NextRequest) {
     const { key, record }: { key: string; record: PlayRecord } = body;
 
     if (!key || !record) {
-      return NextResponse.json(
-        { error: 'Missing key or record' },
-        { status: 400 },
-      );
+      return json({ error: 'Missing key or record' }, { status: 400 });
     }
 
     // 验证播放记录数据
     if (!record.title || !record.source_name || record.index < 1) {
-      return NextResponse.json(
-        { error: 'Invalid record data' },
-        { status: 400 },
-      );
+      return json({ error: 'Invalid record data' }, { status: 400 });
     }
 
     // 从key中解析source和id
     const [source, id] = key.split('+');
     if (!source || !id) {
-      return NextResponse.json(
-        { error: 'Invalid key format' },
-        { status: 400 },
-      );
+      return json({ error: 'Invalid key format' }, { status: 400 });
     }
 
     // 获取现有播放记录以保持原始集数
@@ -125,25 +119,20 @@ export async function POST(request: NextRequest) {
       finalRecord.total_time > 0 &&
       finalRecord.play_time >= finalRecord.total_time * 0.8;
     if (
-      !userMovieHisMap.has(userMovieHis) &&
-      ((timeCon && finalRecord.total_episodes == 1) ||
-        (timeCon &&
-          finalRecord.total_episodes > 1 &&
-          finalRecord.index >= finalRecord.total_episodes * 0.9))
+      (timeCon && finalRecord.total_episodes == 1) ||
+      (timeCon &&
+        finalRecord.total_episodes > 1 &&
+        finalRecord.index >= finalRecord.total_episodes * 0.9)
     ) {
       const movieKey = `${record.title}_${record.year}`;
-      userMovieHisMap.set(userMovieHis, movieKey);
       await db.getClient().sAdd(userMovieHis, movieKey);
     }
     await db.updateUserStats(authInfo.username, finalRecord);
     await db.savePlayRecord(authInfo.username, key, finalRecord);
-    return NextResponse.json({ success: true }, { status: 200 });
+    return json({ success: true, record: finalRecord }, { status: 200 });
   } catch (err) {
     console.error('保存播放记录失败', err);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 },
-    );
+    return json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }
 
@@ -152,7 +141,7 @@ export async function DELETE(request: NextRequest) {
     // 从 cookie 获取用户信息
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const config = await loadConfig();
@@ -162,27 +151,26 @@ export async function DELETE(request: NextRequest) {
         (u) => u.username === authInfo.username,
       );
       if (!user) {
-        return NextResponse.json({ error: '用户不存在' }, { status: 401 });
+        return json({ error: '用户不存在' }, { status: 401 });
       }
       if (user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
+        return json({ error: '用户已被封禁' }, { status: 401 });
       }
     }
 
     const username = authInfo.username;
     const { searchParams } = new URL(request.url);
     const key = searchParams.get('key');
+    let deletedRecord: PlayRecord | null = null;
 
     if (key) {
       // 如果提供了 key，删除单条播放记录
       const [source, id] = key.split('+');
       if (!source || !id) {
-        return NextResponse.json(
-          { error: 'Invalid key format' },
-          { status: 400 },
-        );
+        return json({ error: 'Invalid key format' }, { status: 400 });
       }
 
+      deletedRecord = await db.getPlayRecord(username, key);
       await db.deletePlayRecord(username, source, id);
     } else {
       // 未提供 key，则清空全部播放记录
@@ -196,12 +184,9 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    return NextResponse.json({ success: true }, { status: 200 });
+    return json({ success: true, record: deletedRecord }, { status: 200 });
   } catch (err) {
     console.error('删除播放记录失败', err);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 },
-    );
+    return json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }

@@ -3,7 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { SEARCH_CACHE_EXPIRE } from '@/lib/cache';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { getAvailableApiSites, loadConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
 import { SearchResult } from '@/lib/types';
@@ -11,28 +11,24 @@ import { generateSearchVariants } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 
+function privateJson(body: unknown, init?: ResponseInit) {
+  return NextResponse.json(body, {
+    ...init,
+    headers: noStoreResponseHeaders(init?.headers),
+  });
+}
+
 export async function GET(request: NextRequest) {
   const authInfo = getAuthInfoFromCookie(request);
   if (!authInfo || !authInfo.username) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return privateJson({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const { searchParams } = new URL(request.url);
   const query = searchParams.get('q');
 
   if (!query) {
-    const cacheTime = SEARCH_CACHE_EXPIRE;
-    return NextResponse.json(
-      { results: [] },
-      {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-          'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Netlify-Vary': 'query',
-        },
-      },
-    );
+    return privateJson({ results: [] });
   }
   const apiSites = await getAvailableApiSites(authInfo.username);
   const config = await loadConfig();
@@ -55,27 +51,10 @@ export async function GET(request: NextRequest) {
     const results = await Promise.all(searchPromises);
     let flattenedResults: SearchResult[] = results.flat();
     if (flattenedResults.length === 0) {
-      console.log(
-        `视频搜索完成. username = ${authInfo.username}, length = ${flattenedResults.length}, query = ${query}, searchVariants = ${searchVariants}`,
-      );
-      return NextResponse.json({ results: [] }, { status: 200 });
+      return privateJson({ results: [] }, { status: 200 });
     }
-    console.log(
-      `视频搜索完成. username = ${authInfo.username}, length = ${flattenedResults.length}, query = ${query}, searchVariants = ${searchVariants}`,
-    );
-    const cacheTime = SEARCH_CACHE_EXPIRE;
-    return NextResponse.json(
-      { results: flattenedResults },
-      {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-          'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Netlify-Vary': 'query',
-        },
-      },
-    );
+    return privateJson({ results: flattenedResults });
   } catch (_error) {
-    return NextResponse.json({ error: '搜索失败' }, { status: 500 });
+    return privateJson({ error: '搜索失败' }, { status: 500 });
   }
 }

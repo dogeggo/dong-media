@@ -310,7 +310,7 @@ export async function scrapeMovieReleases(
     }
 
     console.error('电影数据抓取失败，已达到最大重试次数');
-    return [];
+    throw error;
   }
 }
 
@@ -378,7 +378,7 @@ export async function scrapeTVReleases(
     }
 
     console.error('电视剧数据抓取失败，已达到最大重试次数');
-    return [];
+    throw error;
   }
 }
 
@@ -732,7 +732,7 @@ export async function scrapeMovieHomepage(
     }
 
     console.error('电影首页数据抓取失败，已达到最大重试次数');
-    return [];
+    throw error;
   }
 }
 
@@ -786,7 +786,7 @@ export async function scrapeTVHomepage(
     }
 
     console.error('电视剧首页数据抓取失败，已达到最大重试次数');
-    return [];
+    throw error;
   }
 }
 
@@ -828,6 +828,9 @@ export async function scrapeAllReleases(): Promise<ReleaseCalendarItem[]> {
 
     // 合并所有数据，去重（按title和releaseDate去重）
     const allItems = [...movies, ...moviesHomepage, ...tvShows, ...tvHomepage];
+    if (allItems.length === 0) {
+      throw new Error('Release calendar upstreams returned no usable data');
+    }
     const uniqueItems = allItems.filter(
       (item, index, self) =>
         index ===
@@ -843,7 +846,7 @@ export async function scrapeAllReleases(): Promise<ReleaseCalendarItem[]> {
     return uniqueItems;
   } catch (error) {
     console.error('❌ 抓取发布日历数据失败:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -1014,12 +1017,6 @@ export async function getReleaseCalendarWithFilters(
     return { ...calendar, filters, allCalendar };
   } catch (error) {
     console.error('获取发布日历失败:', error);
-    return {
-      items: [],
-      total: 0,
-      hasMore: false,
-      filters: { types: [], regions: [], genres: [] },
-      allCalendar: { items: [], total: 0, hasMore: false },
-    };
+    throw error;
   }
 }

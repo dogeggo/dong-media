@@ -1,8 +1,8 @@
 import { promisify } from 'util';
 import { gunzip } from 'zlib';
 
+import { CACHE_POLICIES, cacheService } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
-import { db } from '@/lib/db';
 import { parseSafeHttpUrl, safeFetch } from '@/lib/safe-upstream-url';
 
 const defaultUA = 'AptvPlayer/1.4.10';
@@ -44,29 +44,28 @@ export interface TvBoxConfig {
   [key: string]: any;
 }
 
-const cachedLiveChannels: { [key: string]: LiveChannels } = {};
-
-export function deleteCachedLiveChannels(key: string) {
-  delete cachedLiveChannels[key];
+export async function deleteCachedLiveChannels(key: string) {
+  await Promise.all([
+    cacheService.delete(CACHE_POLICIES.LIVE_CHANNELS, { sourceKey: key }),
+    cacheService.delete(CACHE_POLICIES.LIVE_EPG, { sourceKey: key }),
+  ]);
 }
 
 export async function getCachedLiveChannels(
   key: string,
 ): Promise<LiveChannels | null> {
-  if (!cachedLiveChannels[key]) {
-    const config = await loadConfig();
-    const liveInfo = config.LiveConfig?.find((live) => live.key === key);
-    if (!liveInfo) {
-      return null;
-    }
-    const channelNum = await refreshLiveChannels(liveInfo);
-    if (channelNum === 0) {
-      return null;
-    }
-    liveInfo.channelNumber = channelNum;
-    await db.saveAdminConfig(config);
-  }
-  return cachedLiveChannels[key] || null;
+  const config = await loadConfig();
+  const liveInfo = config.LiveConfig?.find((live) => live.key === key);
+  if (!liveInfo || liveInfo.disabled) return null;
+
+  return cacheService.getOrLoad(
+    CACHE_POLICIES.LIVE_CHANNELS,
+    { sourceKey: key },
+    async () => {
+      return fetchLiveChannels(liveInfo);
+    },
+    { isNegative: (value) => value === null },
+  );
 }
 
 export async function isConfiguredLiveChannelUrl(
@@ -105,18 +104,38 @@ export async function refreshLiveChannels(liveInfo: {
   from: 'config' | 'custom';
   channelNumber?: number;
   disabled?: boolean;
-}): Promise<number> {
-  console.log(
-    `[Live] Starting refresh for source: ${liveInfo.name} (${liveInfo.url})`,
+}): Promise<LiveChannels | null> {
+  const cached = await cacheService.getOrLoadResult(
+    CACHE_POLICIES.LIVE_CHANNELS,
+    { sourceKey: liveInfo.key },
+    () => fetchLiveChannels(liveInfo),
+    { forceRefresh: true, isNegative: (value) => value === null },
   );
-
-  if (cachedLiveChannels[liveInfo.key]) {
-    delete cachedLiveChannels[liveInfo.key];
+  if (cached.status === 'STALE') {
+    throw new Error(`直播源 ${liveInfo.key} 刷新失败，已保留旧缓存`);
   }
+  await cacheService.delete(CACHE_POLICIES.LIVE_EPG, {
+    sourceKey: liveInfo.key,
+  });
+  return cached.value;
+}
+
+async function fetchLiveChannels(liveInfo: {
+  key: string;
+  name: string;
+  url: string;
+  ua?: string;
+  epg?: string;
+  isTvBox?: boolean;
+  from: 'config' | 'custom';
+  channelNumber?: number;
+  disabled?: boolean;
+}): Promise<LiveChannels | null> {
+  console.log(`[Live] Starting refresh for source: ${liveInfo.key}`);
 
   if (!liveInfo.url) {
     console.error('[Live] refreshLiveChannels: URL is missing');
-    return 0;
+    return null;
   }
 
   const ua = liveInfo.ua || defaultUA;
@@ -147,7 +166,7 @@ export async function refreshLiveChannels(liveInfo: {
       console.error(
         `[Live] Failed to fetch live source: ${response.status} ${response.statusText}`,
       );
-      return 0;
+      throw new Error(`Live source returned ${response.status}`);
     }
 
     content = await response.text();
@@ -221,6 +240,14 @@ export async function refreshLiveChannels(liveInfo: {
       } else if (tvBoxResult.type === 'm3u') {
         // 回退到 M3U 解析
         result = parseM3U(liveInfo.key, tvBoxResult.content);
+      } else if (tvBoxResult.type === 'error') {
+        throw new Error(
+          `TVBox live source failed: ${
+            tvBoxResult.error instanceof Error
+              ? tvBoxResult.error.message
+              : String(tvBoxResult.error || 'unknown error')
+          }`,
+        );
       } else {
         // 无法识别或出错，尝试作为普通 M3U 解析
         result = parseM3U(liveInfo.key, effectiveContent);
@@ -234,7 +261,7 @@ export async function refreshLiveChannels(liveInfo: {
 
     // 如果没有频道，直接返回
     if (!result.channels || result.channels.length === 0) {
-      return 0;
+      return null;
     }
 
     const { epgs, logos } = await parseEpg(
@@ -244,17 +271,16 @@ export async function refreshLiveChannels(liveInfo: {
       result.channels,
     );
 
-    cachedLiveChannels[liveInfo.key] = {
+    return {
       channelNumber: result.channels.length,
       channels: result.channels,
       epgUrl: epgUrl,
       epgs: epgs,
       epgLogos: logos,
     };
-    return result.channels.length;
   } catch (error) {
     console.error('Failed to refresh live channels:', error);
-    return 0;
+    throw error;
   }
 }
 

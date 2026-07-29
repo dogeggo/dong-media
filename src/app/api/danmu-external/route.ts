@@ -2,9 +2,13 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
-import { DOUBAN_CACHE_EXPIRE } from '@/lib/cache';
+import {
+  CACHE_POLICIES,
+  cacheService,
+  normalizeQuery,
+  noStoreResponseHeaders,
+} from '@/lib/cache-system';
 import { getExtractPlatformUrls } from '@/lib/douban-api';
-import { getCache, setCache } from '@/lib/server-cache';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
 export interface PlatformUrl {
@@ -31,6 +35,7 @@ async function searchFromCaijiAPI(
   title: string,
   episode?: string | null,
 ): Promise<PlatformUrl[]> {
+  let successfulResponses = 0;
   try {
     // 尝试多种标题格式进行搜索
     const searchTitles = [
@@ -52,10 +57,12 @@ async function searchFromCaijiAPI(
 
       if (!response.ok) {
         console.log(`❌ 搜索"${searchTitle}"失败:`, response.status);
+        await response.body?.cancel();
         continue; // 尝试下一个标题
       }
 
       const data: any = await response.json();
+      successfulResponses++;
       if (!data.list || data.list.length === 0) {
         console.log(`📭 搜索"${searchTitle}"未找到内容`);
         continue; // 尝试下一个标题
@@ -106,10 +113,13 @@ async function searchFromCaijiAPI(
         return await processSelectedResult(selectedResult, episode);
       }
     }
+    if (successfulResponses === 0) {
+      throw new Error('All Caiji search requests failed');
+    }
     return [];
   } catch (error) {
     console.error('❌ Caiji API搜索失败:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -129,7 +139,10 @@ async function processSelectedResult(
       },
     });
 
-    if (!detailResponse.ok) return [];
+    if (!detailResponse.ok) {
+      await detailResponse.body?.cancel();
+      throw new Error(`Caiji detail request returned ${detailResponse.status}`);
+    }
 
     const detailData: any = await detailResponse.json();
     if (!detailData.list || detailData.list.length === 0) return [];
@@ -210,7 +223,7 @@ async function processSelectedResult(
     return urls;
   } catch (error) {
     console.error('❌ Caiji API搜索失败:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -220,6 +233,7 @@ async function fetchDanmuFromXMLAPI(videoUrl: string): Promise<DanmuItem[]> {
     'https://danmaku.dogegg.online',
     'https://danmu.smone.us',
   ];
+  let successfulResponses = 0;
 
   // 尝试每个API URL
   for (let i = 0; i < xmlApiUrls.length; i++) {
@@ -246,10 +260,12 @@ async function fetchDanmuFromXMLAPI(videoUrl: string): Promise<DanmuItem[]> {
 
       if (!response.ok) {
         console.log(`❌ ${apiName}响应失败:`, response.status);
+        await response.body?.cancel();
         continue; // 尝试下一个API
       }
 
       const responseText = await response.text();
+      successfulResponses++;
       console.log(`📄 ${apiName}原始响应长度:`, responseText.length);
 
       // 使用正则表达式解析XML（Node.js兼容）
@@ -454,6 +470,9 @@ async function fetchDanmuFromXMLAPI(videoUrl: string): Promise<DanmuItem[]> {
 
   // 所有API都失败了
   console.log('❌ 所有XML API都无法获取弹幕数据');
+  if (successfulResponses === 0) {
+    throw new Error('All XML danmu requests failed');
+  }
   return [];
 }
 
@@ -493,7 +512,8 @@ async function fetchDanmuFromAPI(videoUrl: string): Promise<DanmuItem[]> {
 
     if (!response.ok) {
       console.log('❌ API响应失败:', response.status);
-      return [];
+      await response.body?.cancel();
+      throw new Error(`Danmu API returned ${response.status}`);
     }
 
     const responseText = await response.text();
@@ -505,7 +525,7 @@ async function fetchDanmuFromAPI(videoUrl: string): Promise<DanmuItem[]> {
     } catch (parseError) {
       console.error('❌ JSON解析失败:', parseError);
       console.log('响应内容:', responseText.substring(0, 200));
-      return [];
+      throw parseError;
     }
 
     if (!data.danmuku || !Array.isArray(data.danmuku)) return [];
@@ -571,16 +591,19 @@ async function fetchDanmuFromAPI(videoUrl: string): Promise<DanmuItem[]> {
     } else {
       console.error('❌ 获取弹幕失败:', error);
     }
-    return [];
+    throw error;
   }
 }
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const doubanId = searchParams.get('douban_id');
-  const title = searchParams.get('title');
+  const rawTitle = searchParams.get('title');
+  const title = rawTitle ? normalizeQuery(rawTitle) : '';
   const year = searchParams.get('year');
-  const episode = searchParams.get('episode'); // 新增集数参数
+  const episodeParam = searchParams.get('episode');
+  const episodeNumber = episodeParam ? Number(episodeParam) : null;
+  const episode = episodeNumber === null ? null : String(episodeNumber);
 
   console.log(
     '弹幕API请求参数',
@@ -594,143 +617,203 @@ export async function GET(request: NextRequest) {
     episode,
   );
 
-  if (!doubanId && !title) {
+  if ((!doubanId && !title) || title.length > 200) {
     return NextResponse.json(
       {
-        error: 'Missing required parameters: douban_id or title',
+        error: 'douban_id or a title of at most 200 characters is required',
       },
-      { status: 400 },
+      { status: 400, headers: noStoreResponseHeaders() },
+    );
+  }
+  if (doubanId && !/^\d{1,20}$/.test(doubanId)) {
+    return NextResponse.json(
+      { error: 'douban_id must be a numeric Douban ID' },
+      { status: 400, headers: noStoreResponseHeaders() },
+    );
+  }
+  if (
+    episodeNumber !== null &&
+    (!Number.isSafeInteger(episodeNumber) ||
+      episodeNumber < 1 ||
+      episodeNumber > 100_000)
+  ) {
+    return NextResponse.json(
+      { error: 'episode must be an integer between 1 and 100000' },
+      { status: 400, headers: noStoreResponseHeaders() },
     );
   }
 
   try {
-    const cacheKey = `danmu-cache-${title}_${year}_${doubanId}_${episode}`;
+    const result = await cacheService.getOrLoad(
+      CACHE_POLICIES.DANMU_NORMALIZED,
+      {
+        doubanId,
+        title: title || undefined,
+        episode,
+      },
+      async () => {
+        let platformUrls: PlatformUrl[] = [];
+        let platformLookupSucceeded = false;
 
-    const cached = await getCache(cacheKey);
-
-    if (cached) {
-      return NextResponse.json(cached);
-    }
-
-    let platformUrls: PlatformUrl[] = [];
-
-    // 优先从豆瓣页面提取链接
-    if (doubanId) {
-      platformUrls = await getExtractPlatformUrls(doubanId, episode);
-      console.log('📝 豆瓣提取结果:', platformUrls);
-    }
-
-    // 如果豆瓣没有结果，使用caiji.cyou API作为备用
-    if (platformUrls.length === 0 && title) {
-      console.log('🔍 豆瓣未找到链接，使用Caiji API备用搜索...');
-      const caijiUrls = await searchFromCaijiAPI(title, episode);
-      if (caijiUrls.length > 0) {
-        platformUrls = caijiUrls;
-        console.log('📺 Caiji API备用结果:', platformUrls);
-      }
-    }
-
-    // 如果找不到任何链接，直接返回空结果，不使用测试数据
-    // （删除了不合适的fallback测试链接逻辑）
-
-    if (platformUrls.length === 0) {
-      console.log('❌ 未找到任何视频平台链接，返回空弹幕结果');
-
-      return NextResponse.json({
-        danmu: [],
-        platforms: [],
-        total: 0,
-        message: `未找到"${title}"的视频平台链接，无法获取弹幕数据`,
-      });
-    }
-
-    // 并发获取多个平台的弹幕（使用XML API + JSON API备用）
-    const danmuPromises = platformUrls.map(async ({ platform, url }) => {
-      console.log(`🔄 处理平台: ${platform}, URL: ${url}`);
-
-      // 首先尝试XML API (主用)
-      let danmu = await fetchDanmuFromXMLAPI(url);
-      console.log(`📊 ${platform} XML API获取到 ${danmu.length} 条弹幕`);
-
-      // 如果XML API失败或结果很少，尝试JSON API作为备用
-      if (danmu.length === 0) {
-        console.log(`🔄 ${platform} XML API无结果，尝试JSON API备用...`);
-        const jsonDanmu = await fetchDanmuFromAPI(url);
-        console.log(`📊 ${platform} JSON API获取到 ${jsonDanmu.length} 条弹幕`);
-
-        if (jsonDanmu.length > 0) {
-          danmu = jsonDanmu;
-          console.log(
-            `✅ ${platform} 使用JSON API备用数据: ${danmu.length} 条弹幕`,
-          );
+        // 优先从豆瓣页面提取链接
+        if (doubanId) {
+          try {
+            platformUrls = await cacheService.getOrLoad(
+              CACHE_POLICIES.DOUBAN_PLATFORM_LINK,
+              { doubanId, episode: episode || null },
+              () => getExtractPlatformUrls(doubanId, episode),
+              { isNegative: (value) => value.length === 0 },
+            );
+            platformLookupSucceeded = true;
+            console.log('📝 豆瓣提取结果:', platformUrls);
+          } catch (error) {
+            console.error('❌ 豆瓣平台链接提取失败:', error);
+          }
         }
-      } else {
-        console.log(`✅ ${platform} 使用XML API数据: ${danmu.length} 条弹幕`);
-      }
 
-      return { platform, danmu, url };
-    });
+        // 如果豆瓣没有结果，使用caiji.cyou API作为备用
+        if (platformUrls.length === 0 && title) {
+          console.log('🔍 豆瓣未找到链接，使用Caiji API备用搜索...');
+          try {
+            const caijiUrls = await searchFromCaijiAPI(title, episode);
+            platformLookupSucceeded = true;
+            if (caijiUrls.length > 0) {
+              platformUrls = caijiUrls;
+              console.log('📺 Caiji API备用结果:', platformUrls);
+            }
+          } catch (error) {
+            console.error('❌ Caiji API备用搜索失败:', error);
+          }
+        }
 
-    const results = await Promise.allSettled(danmuPromises);
+        // 如果找不到任何链接，直接返回空结果，不使用测试数据
+        // （删除了不合适的fallback测试链接逻辑）
 
-    // 合并所有成功的弹幕数据
-    let allDanmu: DanmuItem[] = [];
-    const platformInfo: any[] = [];
+        if (platformUrls.length === 0) {
+          if (!platformLookupSucceeded) {
+            throw new Error('All platform URL lookups failed');
+          }
+          console.log('❌ 未找到任何视频平台链接，返回空弹幕结果');
 
-    results.forEach((result) => {
-      if (result.status === 'fulfilled' && result.value.danmu.length > 0) {
-        allDanmu = allDanmu.concat(result.value.danmu);
-        platformInfo.push({
-          platform: result.value.platform,
-          url: result.value.url,
-          count: result.value.danmu.length,
+          return {
+            danmu: [],
+            platforms: [],
+            total: 0,
+            message: `未找到"${title}"的视频平台链接，无法获取弹幕数据`,
+          };
+        }
+
+        // 并发获取多个平台的弹幕（使用XML API + JSON API备用）
+        const danmuPromises = platformUrls.map(async ({ platform, url }) => {
+          console.log(`🔄 处理平台: ${platform}, URL: ${url}`);
+
+          // 首先尝试XML API (主用)
+          let danmu: DanmuItem[] = [];
+          let upstreamResponded = false;
+          try {
+            danmu = await fetchDanmuFromXMLAPI(url);
+            upstreamResponded = true;
+          } catch (error) {
+            console.error(`❌ ${platform} XML API全部失败:`, error);
+          }
+          console.log(`📊 ${platform} XML API获取到 ${danmu.length} 条弹幕`);
+
+          // 如果XML API失败或结果很少，尝试JSON API作为备用
+          if (danmu.length === 0) {
+            console.log(`🔄 ${platform} XML API无结果，尝试JSON API备用...`);
+            try {
+              const jsonDanmu = await fetchDanmuFromAPI(url);
+              upstreamResponded = true;
+              console.log(
+                `📊 ${platform} JSON API获取到 ${jsonDanmu.length} 条弹幕`,
+              );
+
+              if (jsonDanmu.length > 0) {
+                danmu = jsonDanmu;
+                console.log(
+                  `✅ ${platform} 使用JSON API备用数据: ${danmu.length} 条弹幕`,
+                );
+              }
+            } catch (error) {
+              console.error(`❌ ${platform} JSON API失败:`, error);
+            }
+          } else {
+            console.log(
+              `✅ ${platform} 使用XML API数据: ${danmu.length} 条弹幕`,
+            );
+          }
+
+          if (!upstreamResponded) {
+            throw new Error(`All danmu upstreams failed for ${platform}`);
+          }
+
+          return { platform, danmu, url };
         });
-      }
-    });
 
-    // 按时间排序
-    allDanmu.sort((a, b) => a.time - b.time);
-
-    // 🚀 优化去重处理：更精确的重复检测
-    const uniqueDanmu: DanmuItem[] = [];
-    const seenMap = new Map<string, boolean>();
-
-    // 批量处理去重，避免阻塞
-    const DEDUP_BATCH_SIZE = 100;
-    for (let i = 0; i < allDanmu.length; i += DEDUP_BATCH_SIZE) {
-      const batch = allDanmu.slice(i, i + DEDUP_BATCH_SIZE);
-
-      batch.forEach((danmu) => {
-        // 创建更精确的唯一标识：时间(保留2位小数) + 文本内容 + 颜色
-        const normalizedText = danmu.text.trim().toLowerCase();
-        const timeKey = Math.round(danmu.time * 100) / 100; // 精确到0.01秒
-        const uniqueKey = `${timeKey}_${normalizedText}_${danmu.color || 'default'}`;
-
-        if (!seenMap.has(uniqueKey)) {
-          seenMap.set(uniqueKey, true);
-          uniqueDanmu.push(danmu);
+        const results = await Promise.allSettled(danmuPromises);
+        if (results.every((result) => result.status === 'rejected')) {
+          throw new Error('All danmu platform requests failed');
         }
-      });
 
-      // 让出执行权，避免阻塞
-      if (i % (DEDUP_BATCH_SIZE * 5) === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-    }
+        // 合并所有成功的弹幕数据
+        let allDanmu: DanmuItem[] = [];
+        const platformInfo: any[] = [];
 
-    console.log(
-      `🎯 弹幕去重优化: ${allDanmu.length} -> ${uniqueDanmu.length} 条`,
+        results.forEach((result) => {
+          if (result.status === 'fulfilled' && result.value.danmu.length > 0) {
+            allDanmu = allDanmu.concat(result.value.danmu);
+            platformInfo.push({
+              platform: result.value.platform,
+              url: result.value.url,
+              count: result.value.danmu.length,
+            });
+          }
+        });
+
+        // 按时间排序
+        allDanmu.sort((a, b) => a.time - b.time);
+
+        // 🚀 优化去重处理：更精确的重复检测
+        const uniqueDanmu: DanmuItem[] = [];
+        const seenMap = new Map<string, boolean>();
+
+        // 批量处理去重，避免阻塞
+        const DEDUP_BATCH_SIZE = 100;
+        for (let i = 0; i < allDanmu.length; i += DEDUP_BATCH_SIZE) {
+          const batch = allDanmu.slice(i, i + DEDUP_BATCH_SIZE);
+
+          batch.forEach((danmu) => {
+            // 创建更精确的唯一标识：时间(保留2位小数) + 文本内容 + 颜色
+            const normalizedText = danmu.text.trim().toLowerCase();
+            const timeKey = Math.round(danmu.time * 100) / 100; // 精确到0.01秒
+            const uniqueKey = `${timeKey}_${normalizedText}_${danmu.color || 'default'}`;
+
+            if (!seenMap.has(uniqueKey)) {
+              seenMap.set(uniqueKey, true);
+              uniqueDanmu.push(danmu);
+            }
+          });
+
+          // 让出执行权，避免阻塞
+          if (i % (DEDUP_BATCH_SIZE * 5) === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+        }
+
+        console.log(
+          `🎯 弹幕去重优化: ${allDanmu.length} -> ${uniqueDanmu.length} 条`,
+        );
+
+        return {
+          danmu: uniqueDanmu,
+          platforms: platformInfo,
+          total: uniqueDanmu.length,
+        };
+      },
+      { isNegative: (value) => value.danmu.length === 0 },
     );
 
-    let result = {
-      danmu: uniqueDanmu,
-      platforms: platformInfo,
-      total: uniqueDanmu.length,
-    };
-
-    await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.danmu);
-
-    return NextResponse.json(result);
+    return NextResponse.json(result, { headers: noStoreResponseHeaders() });
   } catch (error) {
     console.error('外部弹幕获取失败:', error);
     return NextResponse.json(
@@ -738,7 +821,7 @@ export async function GET(request: NextRequest) {
         error: '获取外部弹幕失败',
         danmu: [],
       },
-      { status: 500 },
+      { status: 500, headers: noStoreResponseHeaders() },
     );
   }
 }

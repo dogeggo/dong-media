@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { unsealSession } from '@/lib/sealed-session';
 
 export const runtime = 'nodejs';
@@ -33,10 +34,9 @@ export async function GET(request: NextRequest) {
       { error: 'OIDC会话不存在或已过期' },
       {
         status: 404,
-        headers: {
-          'Cache-Control': 'private, no-store, max-age=0',
+        headers: noStoreResponseHeaders({
           'X-Robots-Tag': 'noindex, nofollow, noarchive',
-        },
+        }),
       },
     );
   }
@@ -48,11 +48,10 @@ export async function GET(request: NextRequest) {
       trust_level: session.trust_level,
     },
     {
-      headers: {
-        'Cache-Control': 'private, no-store, max-age=0',
+      headers: noStoreResponseHeaders({
         'X-Content-Type-Options': 'nosniff',
         'X-Robots-Tag': 'noindex, nofollow, noarchive',
-      },
+      }),
     },
   );
 }

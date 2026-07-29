@@ -296,7 +296,6 @@ interface SiteConfig {
   SiteName: string;
   Announcement: string;
   SearchDownstreamMaxPage: number;
-  SiteInterfaceCacheTime: number;
   ShowAdultContent: boolean;
   FluidSearch: boolean;
   // TMDB配置
@@ -5525,7 +5524,6 @@ const SiteConfigComponent = ({
     SiteName: '',
     Announcement: '',
     SearchDownstreamMaxPage: 1,
-    SiteInterfaceCacheTime: 7200,
     ShowAdultContent: false,
     FluidSearch: true,
     // TMDB配置默认值
@@ -5727,25 +5725,6 @@ const SiteConfigComponent = ({
             setSiteSettings((prev) => ({
               ...prev,
               SearchDownstreamMaxPage: Number(e.target.value),
-            }))
-          }
-          className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent'
-        />
-      </div>
-
-      {/* 站点接口缓存时间 */}
-      <div>
-        <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
-          站点接口缓存时间（秒）
-        </label>
-        <input
-          type='number'
-          min={1}
-          value={siteSettings.SiteInterfaceCacheTime}
-          onChange={(e) =>
-            setSiteSettings((prev) => ({
-              ...prev,
-              SiteInterfaceCacheTime: Number(e.target.value),
             }))
           }
           className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent'

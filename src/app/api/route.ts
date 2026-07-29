@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { getShowAdultContent } from '@/lib/config';
 
 /**
@@ -10,11 +11,14 @@ import { getShowAdultContent } from '@/lib/config';
 export async function GET(request: NextRequest) {
   const authInfo = getAuthInfoFromCookie(request);
   if (!authInfo || !authInfo.username) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json(
+      { error: 'Unauthorized' },
+      { status: 401, headers: noStoreResponseHeaders() },
+    );
   }
   // 判断是否启用成人内容过滤
   // 默认启用过滤（家庭安全模式）
-  const adultFilterEnabled = getShowAdultContent(authInfo.username);
+  const adultFilterEnabled = !(await getShowAdultContent(authInfo.username));
 
   const response = NextResponse.json({
     status: 'ok',
@@ -25,6 +29,9 @@ export async function GET(request: NextRequest) {
       ? '家庭安全模式 - 成人内容已过滤'
       : '完整内容模式 - 显示所有内容',
   });
+  noStoreResponseHeaders().forEach((value, key) =>
+    response.headers.set(key, value),
+  );
 
   // 设置 CORS 头
   response.headers.set('Access-Control-Allow-Origin', '*');
@@ -47,7 +54,10 @@ export async function GET(request: NextRequest) {
  * 处理 CORS 预检请求
  */
 export async function OPTIONS() {
-  const response = new NextResponse(null, { status: 204 });
+  const response = new NextResponse(null, {
+    status: 204,
+    headers: noStoreResponseHeaders(),
+  });
 
   response.headers.set('Access-Control-Allow-Origin', '*');
   response.headers.set('Access-Control-Allow-Methods', 'GET, OPTIONS');

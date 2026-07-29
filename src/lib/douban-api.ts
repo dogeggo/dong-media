@@ -1,12 +1,5 @@
 ﻿/* eslint-disable no-console */
 
-import {
-  DOUBAN_CACHE_EXPIRE,
-  getCache,
-  getDouBanCacheKey,
-  setCache,
-} from '@/lib/cache';
-
 import type { PlatformUrl } from '@/app/api/danmu-external/route';
 
 import {
@@ -67,12 +60,6 @@ export async function fetchTrailerWithRetry(
   retryCount = 0,
   getTrailerUrl = true,
 ): Promise<TrailerWithBackdrop> {
-  const cacheKey = getDouBanCacheKey('trailer_url', { id });
-
-  const cachedData = (await getCache(cacheKey)) as TrailerWithBackdrop;
-  if (cachedData) {
-    return cachedData;
-  }
   const MAX_RETRIES = 2;
   const RETRY_DELAY = 2000; // 2秒后重试
   const startTime = Date.now();
@@ -107,16 +94,13 @@ export async function fetchTrailerWithRetry(
     if (!trailerUrl) {
       console.warn(`[refresh-trailer] 影片 ${id} 没有预告片数据`);
       const cachedData = { trailerUrl: undefined, backdrop };
-      await setCache(cacheKey, cachedData, DOUBAN_CACHE_EXPIRE.trailer_url);
       if (getTrailerUrl) {
         throw new Error('该影片没有预告片');
       }
       return cachedData;
     }
     console.log(`[refresh-trailer] 影片 ${id} 刷新成功. url = ${trailerUrl}`);
-    // 写入缓存
     const cachedData = { trailerUrl, backdrop };
-    await setCache(cacheKey, cachedData, DOUBAN_CACHE_EXPIRE.trailer_url);
     return cachedData;
   } catch (error) {
     const failTime = Date.now() - startTime;
@@ -129,7 +113,7 @@ export async function fetchTrailerWithRetry(
       );
       if (retryCount < MAX_RETRIES) {
         await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
-        return fetchTrailerWithRetry(id, retryCount + 1);
+        return fetchTrailerWithRetry(id, retryCount + 1, getTrailerUrl);
       }
     }
     throw error;
@@ -152,18 +136,6 @@ export async function getDoubanCategories(
 ): Promise<DoubanResult> {
   const { kind, category, type, pageLimit = 20, pageStart = 0 } = params;
 
-  // 检查缓存
-  const cacheKey = getDouBanCacheKey('categories', {
-    kind,
-    category,
-    type,
-    pageLimit,
-    pageStart,
-  });
-  const cached = await getCache(cacheKey);
-  if (cached) {
-    return cached;
-  }
   let result: DoubanResult;
   if (typeof window === 'undefined') {
     const url = `https://m.douban.com/rexxar/api/v2/subject/recent_hot/${kind}?start=${pageStart}&limit=${pageLimit}&category=${category}&type=${type}`;
@@ -192,10 +164,6 @@ export async function getDoubanCategories(
     );
     result = await response.json();
   }
-  // 保存到缓存
-  if (result.code === 200) {
-    await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.categories);
-  }
   return result;
 }
 
@@ -211,17 +179,6 @@ export async function getDoubanList(
 ): Promise<DoubanResult> {
   const { tag, type, pageLimit = 20, pageStart = 0 } = params;
 
-  // 检查缓存
-  const cacheKey = getDouBanCacheKey('lists', {
-    tag,
-    type,
-    pageLimit,
-    pageStart,
-  });
-  const cached = await getCache(cacheKey);
-  if (cached) {
-    return cached;
-  }
   let result: DoubanResult;
   if (typeof window === 'undefined') {
     const url = `https://movie.douban.com/j/search_subjects?type=${type}&tag=${tag}&sort=recommend&page_limit=${pageLimit}&page_start=${pageStart}`;
@@ -245,10 +202,6 @@ export async function getDoubanList(
       `/api/douban?tag=${tag}&type=${type}&pageSize=${pageLimit}&pageStart=${pageStart}`,
     );
     result = await response.json();
-  }
-  // 保存到缓存
-  if (result.code === 200) {
-    await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.lists);
   }
   return result;
 }
@@ -282,23 +235,6 @@ export async function getDoubanRecommends(
     sort,
   } = params;
 
-  // 检查缓存
-  const cacheKey = getDouBanCacheKey('recommends', {
-    kind,
-    pageLimit,
-    pageStart,
-    category,
-    format,
-    label,
-    region,
-    year,
-    platform,
-    sort,
-  });
-  const cached = await getCache(cacheKey);
-  if (cached) {
-    return cached;
-  }
   let result: DoubanResult;
   if (typeof window === 'undefined') {
     const selectedCategories = { 类型: category } as any;
@@ -361,10 +297,6 @@ export async function getDoubanRecommends(
       `/api/douban/recommends?kind=${kind}&limit=${pageLimit}&start=${pageStart}&category=${category}&format=${format}&region=${region}&year=${year}&platform=${platform}&sort=${sort}&label=${label}`,
     );
     result = await response.json();
-  }
-  // 保存到缓存
-  if (result.code === 200) {
-    await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.recommends);
   }
   return result;
 }
@@ -533,23 +465,6 @@ function parsePlatformLinksFromHtml(html: string): PlatformLinksCache {
   return { episodes, shared };
 }
 
-function normalizePlatformLinksCache(cached: any): PlatformLinksCache | null {
-  if (!cached) return null;
-  if (Array.isArray(cached)) {
-    return { episodes: [cached], shared: [] };
-  }
-  if (Array.isArray(cached?.data?.platform_link)) {
-    return { episodes: [cached.data.platform_link], shared: [] };
-  }
-  if (Array.isArray(cached?.episodes) && Array.isArray(cached?.shared)) {
-    return {
-      episodes: cached.episodes as PlatformUrl[][],
-      shared: cached.shared as PlatformUrl[],
-    };
-  }
-  return null;
-}
-
 function selectPlatformLinksFromCache(
   cache: PlatformLinksCache,
   episode?: string | null,
@@ -589,13 +504,13 @@ async function fetchDoubanSubjectHtml(doubanId: string): Promise<string> {
   return await response.text();
 }
 
-async function fetchDoubanSubjectAndCache(doubanId: string): Promise<{
+async function fetchDoubanSubject(doubanId: string): Promise<{
   details?: DoubanResult;
   platformLinks: PlatformLinksCache;
 }> {
   const html = await fetchDoubanSubjectHtml(doubanId);
 
-  let platformLinks: PlatformLinksCache;
+  let platformLinks: PlatformLinksCache = { episodes: [], shared: [] };
   try {
     platformLinks = parsePlatformLinksFromHtml(html);
   } catch (error) {
@@ -609,18 +524,6 @@ async function fetchDoubanSubjectAndCache(doubanId: string): Promise<{
     console.error('解析豆瓣详情页面失败:', error);
   }
 
-  const platformCacheKey = getDouBanCacheKey('platform_link', { doubanId });
-  await setCache(
-    platformCacheKey,
-    platformLinks,
-    DOUBAN_CACHE_EXPIRE.platform_link,
-  );
-
-  if (details?.code === 200) {
-    const detailsCacheKey = getDouBanCacheKey('details', { id: doubanId });
-    await setCache(detailsCacheKey, details, DOUBAN_CACHE_EXPIRE.details);
-  }
-
   return { details, platformLinks };
 }
 
@@ -628,16 +531,10 @@ async function fetchDoubanSubjectAndCache(doubanId: string): Promise<{
  * 获取豆瓣影片详细信息
  */
 export async function getDoubanDetails(id: string): Promise<DoubanResult> {
-  // 检查缓存 - 如果缓存中没有plot_summary则重新获取
-  const cacheKey = getDouBanCacheKey('details', { id });
-  const cached = await getCache(cacheKey);
-  if (cached) {
-    return cached;
-  }
   try {
     let result: DoubanResult;
     if (typeof window === 'undefined') {
-      const { details } = await fetchDoubanSubjectAndCache(id);
+      const { details } = await fetchDoubanSubject(id);
       if (!details) {
         throw new DoubanError('解析豆瓣详情页面失败', 'PARSE_ERROR');
       }
@@ -648,14 +545,10 @@ export async function getDoubanDetails(id: string): Promise<DoubanResult> {
         throw new Error(`HTTP error! Status: ${response.status}`);
       }
       result = await response.json();
-      // 保存到缓存（调试模式下不缓存）
-      if (result.code === 200) {
-        const cacheKey = getDouBanCacheKey('details', { id });
-        await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.details);
-      }
     }
     return result;
   } catch (error) {
+    if (typeof window === 'undefined') throw error;
     return {
       code: 500,
       message: `获取豆瓣详情失败: ${(error as Error).message}`,
@@ -742,12 +635,6 @@ export async function getDoubanComments(
   params: DoubanCommentsParams,
 ): Promise<DoubanCommentsResult> {
   const { id, start = 0, limit = 10, sort = 'new_score' } = params;
-  // 检查缓存 - 如果缓存中的数据是空数组，则重新获取
-  const cacheKey = getDouBanCacheKey('comments', { id, start, limit, sort });
-  const cached = await getCache(cacheKey);
-  if (cached && cached.data?.comments?.length > 0) {
-    return cached;
-  }
   let result: DoubanCommentsResult;
   if (typeof window === 'undefined') {
     const params = new URLSearchParams({
@@ -790,10 +677,6 @@ export async function getDoubanComments(
       };
     }
   }
-  // 保存到缓存
-  if (result.code === 200) {
-    await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.comments);
-  }
   return result;
 }
 
@@ -815,18 +698,6 @@ export async function getDoubanActorMovies(
   // 验证参数
   if (!actorName?.trim()) {
     throw new Error('演员名字不能为空');
-  }
-
-  // 检查缓存
-  const cacheKey = getDouBanCacheKey('actor', {
-    actorName,
-    type,
-    pageLimit,
-    pageStart,
-  });
-  const cached = await getCache(cacheKey);
-  if (cached) {
-    return cached;
   }
 
   try {
@@ -915,8 +786,6 @@ export async function getDoubanActorMovies(
       list: list,
     };
 
-    // 保存到缓存
-    await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.lists);
     return result;
   } catch (error) {
     console.error(`搜索演员 ${actorName} 失败:`, error);
@@ -933,13 +802,8 @@ export async function getExtractPlatformUrls(
   episode?: string | null,
 ): Promise<PlatformUrl[]> {
   if (!doubanId) return [];
-  const cacheKey = getDouBanCacheKey('platform_link', { doubanId });
-  const cached = normalizePlatformLinksCache(await getCache(cacheKey));
-  if (cached) {
-    return selectPlatformLinksFromCache(cached, episode);
-  }
   try {
-    const { platformLinks } = await fetchDoubanSubjectAndCache(doubanId);
+    const { platformLinks } = await fetchDoubanSubject(doubanId);
     return selectPlatformLinksFromCache(platformLinks, episode);
   } catch (error) {
     if (error instanceof Error && error.name === 'DoubanSubjectFetchError') {
@@ -952,7 +816,7 @@ export async function getExtractPlatformUrls(
     } else {
       console.error('Failed to extract platform URLs:', error);
     }
-    return [];
+    throw error;
   }
 }
 

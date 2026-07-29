@@ -1,6 +1,7 @@
 ﻿import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { PlayStatsResult, UserStat } from '@/lib/types';
@@ -187,9 +188,7 @@ export async function GET(request: NextRequest) {
     };
 
     return NextResponse.json(result, {
-      headers: {
-        'Cache-Control': 'no-store', // 不缓存，确保数据实时性
-      },
+      headers: noStoreResponseHeaders(),
     });
   } catch (error) {
     // console.error('获取播放统计失败:', error);

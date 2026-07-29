@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { getShowAdultContent, loadConfig } from '@/lib/config';
-import { getCache, setCache } from '@/lib/server-cache';
+import { rateLimiter } from '@/lib/rate-limiter';
 import { getSiteOrigin } from '@/lib/site-origin';
 import { getCandidates, getSpiderJar } from '@/lib/spiderJar';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
@@ -12,29 +13,13 @@ async function checkRateLimit(
   limit = 60,
   windowMs = 60000,
 ): Promise<boolean> {
-  const now = Date.now();
-  const windowStart = Math.floor(now / windowMs) * windowMs; // 对齐到时间窗口开始
-  const key = `tvbox-rate-limit:${ip}:${windowStart}`;
-
-  try {
-    // 获取当前计数
-    const currentCount = (await getCache(key)) || 0;
-
-    if (currentCount >= limit) {
-      return false;
-    }
-
-    // 增加计数并设置过期时间
-    const newCount = currentCount + 1;
-    const expireSeconds = Math.ceil(windowMs / 1000); // 转换为秒
-    await setCache(key, newCount, expireSeconds);
-
-    return true;
-  } catch (error) {
-    console.error('Rate limit check failed:', error);
-    // 如果数据库操作失败，允许请求通过（fail-open策略）
-    return true;
-  }
+  const result = await rateLimiter.consume(
+    'tvbox',
+    ip,
+    limit,
+    Math.ceil(windowMs / 1_000),
+  );
+  return result.allowed;
 }
 
 // 并发控制器 - 限制同时请求数量（优化分类获取性能）
@@ -133,12 +118,28 @@ export async function GET(request: NextRequest) {
     const token = searchParams.get('token'); // 获取token参数
     const forceSpiderRefresh = searchParams.get('forceSpiderRefresh') === '1'; // 强制刷新spider缓存
     if (!token) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401, headers: noStoreResponseHeaders() },
+      );
     }
     const config = await loadConfig();
     const user = config.UserConfig.Users.find((u) => u.tvboxToken === token);
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401, headers: noStoreResponseHeaders() },
+      );
+    }
+    if (
+      forceSpiderRefresh &&
+      user.username !== process.env.USERNAME &&
+      user.role !== 'admin'
+    ) {
+      return NextResponse.json(
+        { error: 'Forbidden: force refresh requires admin access' },
+        { status: 403, headers: noStoreResponseHeaders() },
+      );
     }
     const securityConfig = config.TVBoxSecurityConfig;
     const proxyConfig = config.TVBoxProxyConfig; // 🔑 读取代理配置
@@ -210,7 +211,7 @@ export async function GET(request: NextRequest) {
             error: `Access denied for IP: ${clientIP}`,
             hint: '该IP地址不在白名单中',
           },
-          { status: 403 },
+          { status: 403, headers: noStoreResponseHeaders() },
         );
       }
     }
@@ -240,7 +241,7 @@ export async function GET(request: NextRequest) {
             error: 'Rate limit exceeded',
             hint: `访问频率超限，每分钟最多${rateLimit}次请求`,
           },
-          { status: 429 },
+          { status: 429, headers: noStoreResponseHeaders() },
         );
       }
     }
@@ -253,7 +254,7 @@ export async function GET(request: NextRequest) {
     if (sourceConfigs.length === 0) {
       return NextResponse.json(
         { error: '没有配置任何视频源' },
-        { status: 500 },
+        { status: 500, headers: noStoreResponseHeaders() },
       );
     }
 
@@ -905,22 +906,20 @@ export async function GET(request: NextRequest) {
       const base64Config = Buffer.from(configStr).toString('base64');
 
       return new NextResponse(base64Config, {
-        headers: {
+        headers: noStoreResponseHeaders({
           'Content-Type': 'text/plain; charset=utf-8',
-          'Cache-Control': 'private, no-cache, no-store, must-revalidate',
           'X-Content-Type-Options': 'nosniff',
           'X-Robots-Tag': 'noindex, nofollow, noarchive',
-        },
+        }),
       });
     } else {
       // 返回JSON格式（使用 text/plain 提高 TVBox 分支兼容性）
       return new NextResponse(JSON.stringify(tvboxConfig), {
-        headers: {
+        headers: noStoreResponseHeaders({
           'Content-Type': 'text/plain; charset=utf-8',
-          'Cache-Control': 'private, no-cache, no-store, must-revalidate',
           'X-Content-Type-Options': 'nosniff',
           'X-Robots-Tag': 'noindex, nofollow, noarchive',
-        },
+        }),
       });
     }
   } catch (error) {
@@ -928,11 +927,14 @@ export async function GET(request: NextRequest) {
       {
         error: 'TVBox配置生成失败',
       },
-      { status: 500 },
+      { status: 500, headers: noStoreResponseHeaders() },
     );
   }
 }
 
 export async function OPTIONS() {
-  return new NextResponse(null, { status: 405 });
+  return new NextResponse(null, {
+    status: 405,
+    headers: noStoreResponseHeaders(),
+  });
 }

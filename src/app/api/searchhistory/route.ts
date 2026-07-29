@@ -3,10 +3,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 
 export const runtime = 'nodejs';
+
+function json(body: unknown, init?: ResponseInit) {
+  return NextResponse.json(body, {
+    ...init,
+    headers: noStoreResponseHeaders(init?.headers),
+  });
+}
 
 // 最大保存条数（与客户端保持一致）
 const HISTORY_LIMIT = 20;
@@ -20,7 +28,7 @@ export async function GET(request: NextRequest) {
     // 从 cookie 获取用户信息
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const config = await loadConfig();
@@ -30,21 +38,18 @@ export async function GET(request: NextRequest) {
         (u) => u.username === authInfo.username,
       );
       if (!user) {
-        return NextResponse.json({ error: '用户不存在' }, { status: 401 });
+        return json({ error: '用户不存在' }, { status: 401 });
       }
       if (user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
+        return json({ error: '用户已被封禁' }, { status: 401 });
       }
     }
 
     const history = await db.getSearchHistory(authInfo.username);
-    return NextResponse.json(history, { status: 200 });
+    return json(history, { status: 200 });
   } catch (err) {
     console.error('获取搜索历史失败', err);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 },
-    );
+    return json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }
 
@@ -57,7 +62,7 @@ export async function POST(request: NextRequest) {
     // 从 cookie 获取用户信息
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const config = await loadConfig();
@@ -67,10 +72,10 @@ export async function POST(request: NextRequest) {
         (u) => u.username === authInfo.username,
       );
       if (!user) {
-        return NextResponse.json({ error: '用户不存在' }, { status: 401 });
+        return json({ error: '用户不存在' }, { status: 401 });
       }
       if (user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
+        return json({ error: '用户已被封禁' }, { status: 401 });
       }
     }
 
@@ -78,23 +83,17 @@ export async function POST(request: NextRequest) {
     const keyword: string = body.keyword?.trim();
 
     if (!keyword) {
-      return NextResponse.json(
-        { error: 'Keyword is required' },
-        { status: 400 },
-      );
+      return json({ error: 'Keyword is required' }, { status: 400 });
     }
 
     await db.addSearchHistory(authInfo.username, keyword);
 
     // 再次获取最新列表，确保客户端与服务端同步
     const history = await db.getSearchHistory(authInfo.username);
-    return NextResponse.json(history.slice(0, HISTORY_LIMIT), { status: 200 });
+    return json(history.slice(0, HISTORY_LIMIT), { status: 200 });
   } catch (err) {
     console.error('添加搜索历史失败', err);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 },
-    );
+    return json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }
 
@@ -109,7 +108,7 @@ export async function DELETE(request: NextRequest) {
     // 从 cookie 获取用户信息
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const config = await loadConfig();
@@ -119,10 +118,10 @@ export async function DELETE(request: NextRequest) {
         (u) => u.username === authInfo.username,
       );
       if (!user) {
-        return NextResponse.json({ error: '用户不存在' }, { status: 401 });
+        return json({ error: '用户不存在' }, { status: 401 });
       }
       if (user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
+        return json({ error: '用户已被封禁' }, { status: 401 });
       }
     }
 
@@ -131,12 +130,13 @@ export async function DELETE(request: NextRequest) {
 
     await db.deleteSearchHistory(authInfo.username, kw || undefined);
 
-    return NextResponse.json({ success: true }, { status: 200 });
+    const history = await db.getSearchHistory(authInfo.username);
+    return json(
+      { success: true, history: history.slice(0, HISTORY_LIMIT) },
+      { status: 200 },
+    );
   } catch (err) {
     console.error('删除搜索历史失败', err);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 },
-    );
+    return json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }

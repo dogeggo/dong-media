@@ -1,17 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { SEARCH_CACHE_EXPIRE } from '@/lib/cache';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { getAvailableApiSites, loadConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
 
 export const runtime = 'nodejs';
 
+function privateJson(body: unknown, init?: ResponseInit) {
+  return NextResponse.json(body, {
+    ...init,
+    headers: noStoreResponseHeaders(init?.headers),
+  });
+}
+
 // OrionTV 兼容接口
 export async function GET(request: NextRequest) {
   const authInfo = getAuthInfoFromCookie(request);
   if (!authInfo || !authInfo.username) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return privateJson({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const { searchParams } = new URL(request.url);
@@ -19,18 +26,10 @@ export async function GET(request: NextRequest) {
   const resourceId = searchParams.get('resourceId');
 
   if (!query || !resourceId) {
-    const cacheTime = SEARCH_CACHE_EXPIRE;
-    return NextResponse.json(
-      { result: null, error: '缺少必要参数: q 或 resourceId' },
-      {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-          'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Netlify-Vary': 'query',
-        },
-      },
-    );
+    return privateJson({
+      result: null,
+      error: '缺少必要参数: q 或 resourceId',
+    });
   }
   const apiSites = await getAvailableApiSites(authInfo.username);
 
@@ -38,7 +37,7 @@ export async function GET(request: NextRequest) {
     // 根据 resourceId 查找对应的 API 站点
     const targetSite = apiSites.find((site) => site.key === resourceId);
     if (!targetSite) {
-      return NextResponse.json(
+      return privateJson(
         {
           error: `未找到指定的视频源: ${resourceId}`,
           result: null,
@@ -55,9 +54,8 @@ export async function GET(request: NextRequest) {
       authInfo.username,
     );
     results = results.filter((r) => r.title === query);
-    const cacheTime = SEARCH_CACHE_EXPIRE;
     if (results.length === 0) {
-      return NextResponse.json(
+      return privateJson(
         {
           error: '未找到结果',
           result: null,
@@ -65,20 +63,10 @@ export async function GET(request: NextRequest) {
         { status: 404 },
       );
     } else {
-      return NextResponse.json(
-        { results: results },
-        {
-          headers: {
-            'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-            'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-            'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-            'Netlify-Vary': 'query',
-          },
-        },
-      );
+      return privateJson({ results });
     }
   } catch (_error) {
-    return NextResponse.json(
+    return privateJson(
       {
         error: '搜索失败',
         result: null,

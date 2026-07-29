@@ -24,17 +24,12 @@ import {
   clearAllFavorites,
   getAllFavorites,
   getAllPlayRecords,
-  subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { getDoubanCategories, getDoubanDetails } from '@/lib/douban-api';
 import { getRecommendedShortDramas } from '@/lib/shortdrama-api';
-import {
-  Favorite,
-  PlayRecord,
-  ReleaseCalendarItem,
-  ShortDramaItem,
-} from '@/lib/types';
+import { ReleaseCalendarItem, ShortDramaItem } from '@/lib/types';
 import { DoubanMovieDetail } from '@/lib/types';
+import { getCurrentUserDataScope, userQueryKeys } from '@/lib/user-query-keys';
 
 import CapsuleSwitch from '@/components/CapsuleSwitch';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -311,9 +306,11 @@ function HomeClient() {
     }
   }, [announcement]);
 
+  const userDataScope = getCurrentUserDataScope();
+
   // 🚀 TanStack Query - 使用 useQuery 获取收藏数据（自动缓存，跨页面持久化）
   const { data: allFavorites = {} } = useQuery({
-    queryKey: ['favorites'],
+    queryKey: userQueryKeys.favorites(userDataScope),
     queryFn: () => getAllFavorites(),
     enabled: activeTab === 'favorites',
     staleTime: 5 * 60 * 1000, // 5分钟内数据保持新鲜
@@ -322,7 +319,7 @@ function HomeClient() {
 
   // 🚀 TanStack Query - 使用 useQuery 获取播放记录（自动缓存，跨页面持久化）
   const { data: allPlayRecords = {} } = useQuery({
-    queryKey: ['playRecords'],
+    queryKey: userQueryKeys.playRecords(userDataScope),
     queryFn: () => getAllPlayRecords(),
     enabled: activeTab === 'favorites',
     staleTime: 5 * 60 * 1000, // 5分钟内数据保持新鲜
@@ -793,37 +790,7 @@ function HomeClient() {
   // 🚀 TanStack Query - 处理清空所有收藏（使用 queryClient 刷新缓存）
   const handleClearFavorites = async () => {
     await clearAllFavorites();
-    // 刷新收藏数据缓存
-    queryClient.invalidateQueries({ queryKey: ['favorites'] });
   };
-
-  // 🚀 TanStack Query - 监听数据更新事件，自动刷新缓存
-  useEffect(() => {
-    if (activeTab !== 'favorites') return;
-
-    // 监听收藏更新事件
-    const unsubscribeFavorites = subscribeToDataUpdates(
-      'favoritesUpdated',
-      (newFavorites: Record<string, Favorite>) => {
-        // 直接使用事件数据更新缓存，避免立即请求拿到旧数据
-        queryClient.setQueryData(['favorites'], newFavorites);
-      },
-    );
-
-    // 监听播放记录更新事件
-    const unsubscribePlayRecords = subscribeToDataUpdates(
-      'playRecordsUpdated',
-      (newRecords: Record<string, PlayRecord>) => {
-        // 直接使用事件数据更新缓存，避免立即请求拿到旧数据
-        queryClient.setQueryData(['playRecords'], newRecords);
-      },
-    );
-
-    return () => {
-      unsubscribeFavorites();
-      unsubscribePlayRecords();
-    };
-  }, [activeTab, queryClient]);
 
   const handleCloseAnnouncement = (announcement: string) => {
     dispatch({ type: 'SET_SHOW_ANNOUNCEMENT', payload: false });

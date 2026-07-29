@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { getAvailableApiSites } from '@/lib/config';
 import { getDetailFromApi } from '@/lib/downstream';
 
@@ -40,14 +41,8 @@ export async function GET(request: NextRequest) {
       `获取视频详情: ${apiSite.name} - ${id}，不设置缓存确保集数实时更新`,
     );
 
-    const responseHeaders: Record<string, string> = {
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      Pragma: 'no-cache',
-      Expires: '0',
-    };
-
     return NextResponse.json(result, {
-      headers: responseHeaders,
+      headers: noStoreResponseHeaders(),
     });
   } catch (error) {
     return NextResponse.json(

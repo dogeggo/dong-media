@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import {
+  CACHE_POLICIES,
+  cacheService,
+  hashCacheValue,
+  noStoreResponseHeaders,
+  privateResponseHeaders,
+} from '@/lib/cache-system';
+import { mediaBody, readBodyWithLimit } from '@/lib/cache-system/media/policy';
 import { loadConfig } from '@/lib/config';
 import { verifyMediaUrlSignature } from '@/lib/media-signature';
 import {
@@ -11,7 +19,6 @@ import {
 export const runtime = 'nodejs';
 
 const MAX_KEY_SIZE = 1024 * 1024;
-const keyCache = new Map<string, { data: ArrayBuffer; expiresAt: number }>();
 
 export async function GET(request: NextRequest) {
   const url = request.nextUrl.searchParams.get('url');
@@ -19,7 +26,7 @@ export async function GET(request: NextRequest) {
   if (!url || !source) {
     return NextResponse.json(
       { error: 'Missing url or source' },
-      { status: 400 },
+      { status: 400, headers: noStoreResponseHeaders() },
     );
   }
 
@@ -34,7 +41,7 @@ export async function GET(request: NextRequest) {
   ) {
     return NextResponse.json(
       { error: 'Invalid or expired signature' },
-      { status: 401 },
+      { status: 401, headers: noStoreResponseHeaders() },
     );
   }
 
@@ -43,98 +50,81 @@ export async function GET(request: NextRequest) {
     (candidate) => candidate.key === source && !candidate.disabled,
   );
   if (!liveSource) {
-    return NextResponse.json({ error: 'Source not found' }, { status: 404 });
+    return NextResponse.json(
+      { error: 'Source not found' },
+      { status: 404, headers: noStoreResponseHeaders() },
+    );
   }
 
-  const cacheKey = `${source}:${url}`;
-  const cached = keyCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
-    return new Response(cached.data, {
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'Cache-Control': 'private, max-age=300',
-        'Content-Length': String(cached.data.byteLength),
-        'X-Content-Type-Options': 'nosniff',
-        'X-Robots-Tag': 'noindex, nofollow, noarchive',
-      },
-    });
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10_000);
   try {
-    const response = await safeFetch(url, {
-      maxRedirects: 5,
-      signal: controller.signal,
-      headers: {
-        'User-Agent': liveSource.ua || 'AptvPlayer/1.4.10',
-        Accept: 'application/octet-stream, */*',
-        'Cache-Control': 'no-cache',
+    const data = await cacheService.getOrLoad(
+      CACHE_POLICIES.HLS_KEY,
+      { source, target: hashCacheValue(url) },
+      async () => {
+        const response = await safeFetch(url, {
+          maxRedirects: 5,
+          signal: AbortSignal.timeout(10_000),
+          headers: {
+            'User-Agent': liveSource.ua || 'AptvPlayer/1.4.10',
+            Accept: 'application/octet-stream, */*',
+            'Cache-Control': 'no-cache',
+          },
+        });
+
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new Error(`Upstream key returned ${response.status}`);
+        }
+
+        const contentType = response.headers.get('content-type');
+        if (isExecutableDocumentContentType(contentType)) {
+          await response.body?.cancel();
+          throw new TypeError('Executable document responses are not allowed');
+        }
+
+        const declaredLength = Number(
+          response.headers.get('content-length') || 0,
+        );
+        if (declaredLength > MAX_KEY_SIZE) {
+          await response.body?.cancel();
+          throw new RangeError('Key response is too large');
+        }
+
+        return mediaBody(await readBodyWithLimit(response, MAX_KEY_SIZE));
       },
-    });
-
-    if (!response.ok) {
-      await response.body?.cancel();
-      return NextResponse.json(
-        { error: `Upstream key request failed with status ${response.status}` },
-        { status: response.status },
-      );
-    }
-
-    const contentType = response.headers.get('content-type');
-    if (isExecutableDocumentContentType(contentType)) {
-      await response.body?.cancel();
-      return NextResponse.json(
-        { error: 'Executable document responses are not allowed' },
-        { status: 415 },
-      );
-    }
-
-    const declaredLength = Number(response.headers.get('content-length') || 0);
-    if (declaredLength > MAX_KEY_SIZE) {
-      await response.body?.cancel();
-      return NextResponse.json(
-        { error: 'Key response is too large' },
-        { status: 413 },
-      );
-    }
-
-    const data = await response.arrayBuffer();
-    if (data.byteLength > MAX_KEY_SIZE) {
-      return NextResponse.json(
-        { error: 'Key response is too large' },
-        { status: 413 },
-      );
-    }
-    keyCache.set(cacheKey, { data, expiresAt: Date.now() + 300_000 });
-    if (keyCache.size > 200) {
-      for (const [key, value] of keyCache) {
-        if (value.expiresAt <= Date.now() || keyCache.size > 200)
-          keyCache.delete(key);
-      }
-    }
+      { scope: source },
+    );
 
     return new Response(data, {
-      headers: {
+      headers: privateResponseHeaders(CACHE_POLICIES.HLS_KEY.freshTtlSeconds, {
         'Content-Type': 'application/octet-stream',
-        'Cache-Control': 'private, max-age=300',
         'Content-Length': String(data.byteLength),
         'X-Content-Type-Options': 'nosniff',
         'X-Robots-Tag': 'noindex, nofollow, noarchive',
-      },
+      }),
     });
   } catch (error) {
     if (error instanceof UnsafeUpstreamUrlError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      return NextResponse.json(
+        { error: error.message },
+        { status: 400, headers: noStoreResponseHeaders() },
+      );
     }
     if (error instanceof Error && error.name === 'AbortError') {
       return NextResponse.json(
         { error: 'Key request timed out' },
-        { status: 504 },
+        { status: 504, headers: noStoreResponseHeaders() },
       );
     }
-    return NextResponse.json({ error: 'Key proxy failed' }, { status: 502 });
-  } finally {
-    clearTimeout(timeoutId);
+    const status =
+      error instanceof RangeError
+        ? 413
+        : error instanceof TypeError
+          ? 415
+          : 502;
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Key proxy failed' },
+      { status, headers: noStoreResponseHeaders() },
+    );
   }
 }

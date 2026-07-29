@@ -195,12 +195,6 @@ export interface IStorage {
   // 数据清理相关
   clearAllData(): Promise<void>;
 
-  // 通用缓存相关（新增）
-  getCache(key: string): Promise<any | null>;
-  setCache(key: string, data: any, expireSeconds?: number): Promise<void>;
-  deleteCache(key: string): Promise<void>;
-  clearExpiredCache(prefix?: string): Promise<void>;
-
   // 播放统计相关
   getUserStat(userName: string): Promise<UserStat>;
   // 登入统计相关

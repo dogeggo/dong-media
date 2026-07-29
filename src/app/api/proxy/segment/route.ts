@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { privateResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 import { verifyMediaUrlSignature } from '@/lib/media-signature';
 import {
@@ -79,10 +80,9 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const headers = new Headers({
+    const headers = privateResponseHeaders(300, {
       'Content-Type': contentType || 'application/octet-stream',
       'Accept-Ranges': response.headers.get('accept-ranges') || 'bytes',
-      'Cache-Control': 'private, max-age=300',
       'X-Content-Type-Options': 'nosniff',
       'X-Robots-Tag': 'noindex, nofollow, noarchive',
     });

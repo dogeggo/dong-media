@@ -185,9 +185,17 @@ export async function fetchDouBanHtml(
 export function isDoubanUrl(value: string): boolean {
   try {
     const hostname = new URL(value).hostname.toLowerCase();
-    return hostname.endsWith('douban.com') || hostname.endsWith('doubanio.com');
+    return ['douban.com', 'doubanio.com'].some(
+      (root) => hostname === root || hostname.endsWith(`.${root}`),
+    );
   } catch {
     return false;
+  }
+}
+
+function assertDoubanUrl(value: string): void {
+  if (!isDoubanUrl(value)) {
+    throw new DoubanSubjectFetchError('Unexpected non-Douban URL', 400);
   }
 }
 
@@ -357,6 +365,7 @@ async function fetchDoubanWithRedirects(
   signal?: AbortSignal,
   initialCookieJar?: Map<string, string>,
 ): Promise<DoubanFetchContext> {
+  assertDoubanUrl(url);
   let currentUrl = url;
   const cookieJar = new Map<string, string>(initialCookieJar ?? []);
   const applyCookies = (headers: Record<string, string>) => {
@@ -384,6 +393,7 @@ async function fetchDoubanWithRedirects(
     const location = response.headers.get('location');
     if (!location) break;
     const nextUrl = new URL(location, currentUrl).toString();
+    assertDoubanUrl(nextUrl);
     const redirectHeaders: Record<string, string> = applyCookies({
       ...baseHeaders,
       Referer: currentUrl,
@@ -509,7 +519,7 @@ async function resolveDoubanChallenge(params: {
       actionUrl = new URL('/c', currentUrl).toString();
     }
     const originCandidate = new URL('/c', currentUrl).toString();
-    const postCandidates = [actionUrl, originCandidate];
+    const postCandidates = [actionUrl, originCandidate].filter(isDoubanUrl);
     if (!postCandidates.includes('https://www.douban.com/c')) {
       postCandidates.push('https://www.douban.com/c');
     }
@@ -563,6 +573,7 @@ async function resolveDoubanChallenge(params: {
     const location = postResponse.headers.get('location');
     const redirectTarget = location || challenge.red;
     const redirectUrl = new URL(redirectTarget, postUrl).toString();
+    assertDoubanUrl(redirectUrl);
 
     const finalHeaders: Record<string, string> = {
       ...baseHeaders,

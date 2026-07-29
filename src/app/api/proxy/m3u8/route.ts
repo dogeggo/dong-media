@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 import { getBaseUrl, isConfiguredLiveChannelUrl, resolveUrl } from '@/lib/live';
 import {
@@ -114,11 +115,10 @@ export async function GET(request: NextRequest) {
         {
           status: response.status,
           statusText: response.statusText,
-          headers: {
+          headers: noStoreResponseHeaders({
             'Content-Type': 'text/plain',
-            'Cache-Control': 'private, no-store, max-age=0',
             'X-Content-Type-Options': 'nosniff',
-          },
+          }),
         },
       );
     }
@@ -167,19 +167,11 @@ export async function GET(request: NextRequest) {
         source,
       );
 
-      const headers = new Headers();
-      headers.set(
-        'Content-Type',
-        contentType || 'application/vnd.apple.mpegurl',
-      );
-      headers.set(
-        'Cache-Control',
-        'private, no-cache, no-store, must-revalidate',
-      );
-      headers.set('Pragma', 'no-cache');
-      headers.set('Expires', '0');
-      headers.set('X-Content-Type-Options', 'nosniff');
-      headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+      const headers = noStoreResponseHeaders({
+        'Content-Type': contentType || 'application/vnd.apple.mpegurl',
+        'X-Content-Type-Options': 'nosniff',
+        'X-Robots-Tag': 'noindex, nofollow, noarchive',
+      });
       headers.set(
         'Content-Length',
         Buffer.byteLength(modifiedContent).toString(),
@@ -195,17 +187,12 @@ export async function GET(request: NextRequest) {
     }
 
     // 直接代理非M3U8内容
-    const responseHeaders = new Headers();
-    responseHeaders.set(
-      'Content-Type',
-      response.headers.get('Content-Type') || 'application/vnd.apple.mpegurl',
-    );
-    responseHeaders.set(
-      'Cache-Control',
-      'private, no-cache, no-store, must-revalidate',
-    );
-    responseHeaders.set('X-Content-Type-Options', 'nosniff');
-    responseHeaders.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    const responseHeaders = noStoreResponseHeaders({
+      'Content-Type':
+        response.headers.get('Content-Type') || 'application/vnd.apple.mpegurl',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Robots-Tag': 'noindex, nofollow, noarchive',
+    });
 
     // 复制原始响应的相关头部
     const originalHeaders = [

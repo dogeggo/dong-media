@@ -35,6 +35,7 @@ import {
   type ThemePreset,
 } from '@/lib/theme-config';
 import type { Favorite } from '@/lib/types';
+import { getCurrentUserDataScope, userQueryKeys } from '@/lib/user-query-keys';
 import {
   checkWatchingUpdates,
   getDetailedWatchingUpdates,
@@ -58,6 +59,11 @@ interface UserMenuProps {
 export const UserMenu: React.FC<UserMenuProps> = ({ initialOpen = false }) => {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const userDataScope = getCurrentUserDataScope();
+  const playRecordsQueryKey = useMemo(
+    () => userQueryKeys.playRecords(userDataScope),
+    [userDataScope],
+  );
   const [isOpen, setIsOpen] = useState(initialOpen);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
@@ -178,7 +184,7 @@ export const UserMenu: React.FC<UserMenuProps> = ({ initialOpen = false }) => {
     storageType !== 'localstorage';
 
   const { data: allPlayRecords = {} } = useQuery({
-    queryKey: ['playRecords'],
+    queryKey: playRecordsQueryKey,
     queryFn: () => getAllPlayRecords(),
     staleTime: 5 * 60 * 1000,
     gcTime: 10 * 60 * 1000,
@@ -402,12 +408,12 @@ export const UserMenu: React.FC<UserMenuProps> = ({ initialOpen = false }) => {
     const unsubscribe = subscribeToDataUpdates(
       'playRecordsUpdated',
       (newRecords: Record<string, PlayRecord>) => {
-        queryClient.setQueryData(['playRecords'], newRecords);
+        queryClient.setQueryData(playRecordsQueryKey, newRecords);
       },
     );
 
     return unsubscribe;
-  }, [playRecordsQueryEnabled, queryClient]);
+  }, [playRecordsQueryEnabled, playRecordsQueryKey, queryClient]);
 
   // 加载收藏数据
   useEffect(() => {

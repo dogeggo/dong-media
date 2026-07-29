@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { getCachedLiveChannels } from '@/lib/live';
 import { createSignedMediaProxyUrl } from '@/lib/media-signature';
 import { authenticateRequest } from '@/lib/request-auth';
@@ -85,22 +86,20 @@ export async function GET(request: NextRequest) {
   if (format === 'epg') {
     const xml = `<?xml version="1.0" encoding="UTF-8"?><tv generator-info-name="Dong Media">${xmlChannels.join('')}${xmlPrograms.join('')}</tv>`;
     return new NextResponse(xml, {
-      headers: {
+      headers: noStoreResponseHeaders({
         'Content-Type': 'application/xml; charset=utf-8',
-        'Cache-Control': 'private, no-store, max-age=0',
         'X-Content-Type-Options': 'nosniff',
         'X-Robots-Tag': 'noindex, nofollow, noarchive',
-      },
+      }),
     });
   }
 
   return new NextResponse(`${lines.join('\n')}\n`, {
-    headers: {
+    headers: noStoreResponseHeaders({
       'Content-Type': 'application/vnd.apple.mpegurl; charset=utf-8',
-      'Cache-Control': 'private, no-store, max-age=0',
       'Content-Disposition': 'inline; filename="dong-media-live.m3u"',
       'X-Content-Type-Options': 'nosniff',
       'X-Robots-Tag': 'noindex, nofollow, noarchive',
-    },
+    }),
   });
 }

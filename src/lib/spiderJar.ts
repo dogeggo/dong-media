@@ -1,12 +1,13 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
+import { CACHE_POLICIES, cacheService } from '@/lib/cache-system';
+import { readBodyWithLimit } from '@/lib/cache-system/media/policy';
 import { safeFetch } from '@/lib/safe-upstream-url';
 
 const DEFAULT_JAR_URL =
   'https://raw.githubusercontent.com/FongMi/CatVodSpider/a511a606a287089dffdd8374db75d95ec5f372b6/jar/custom_spider.jar';
 const DEFAULT_JAR_SHA256 =
   '89f5f6e4aeccd3bb0a71c49cee5f4d16d67418d23c35b082c4598419b1138b7b';
-const CACHE_TTL = 24 * 60 * 60 * 1000;
 const MAX_JAR_SIZE = 10 * 1024 * 1024;
 
 export interface SpiderJarInfo {
@@ -21,7 +22,7 @@ export interface SpiderJarInfo {
   tried: number;
 }
 
-let cache: SpiderJarInfo | null = null;
+let latestStatus: Omit<SpiderJarInfo, 'buffer'> | null = null;
 
 function getPinnedJar() {
   const configuredUrl = process.env.SPIDER_JAR_URL?.trim();
@@ -59,12 +60,32 @@ function hashesEqual(actual: string, expected: string) {
 export async function getSpiderJar(
   forceRefresh = false,
 ): Promise<SpiderJarInfo> {
-  const now = Date.now();
-  if (!forceRefresh && cache && now - cache.timestamp < CACHE_TTL) {
-    return { ...cache, cached: true };
-  }
-
   const pinned = getPinnedJar();
+  const result = await cacheService.getOrLoadResult(
+    CACHE_POLICIES.SPIDER_JAR,
+    { source: pinned.url, sha256: pinned.sha256 },
+    () => fetchVerifiedJar(pinned),
+    { forceRefresh },
+  );
+  const info = { ...result.value, cached: result.layer !== 'ORIGIN' };
+  latestStatus = {
+    md5: info.md5,
+    sha256: info.sha256,
+    source: info.source,
+    success: info.success,
+    cached: info.cached,
+    timestamp: info.timestamp,
+    size: info.size,
+    tried: info.tried,
+  };
+  return info;
+}
+
+async function fetchVerifiedJar(pinned: {
+  url: string;
+  sha256: string;
+}): Promise<SpiderJarInfo> {
+  const now = Date.now();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 20_000);
   try {
@@ -89,7 +110,7 @@ export async function getSpiderJar(
       throw new Error('Pinned spider JAR is too large');
     }
 
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const buffer = Buffer.from(await readBodyWithLimit(response, MAX_JAR_SIZE));
     if (
       buffer.length < 1000 ||
       buffer.length > MAX_JAR_SIZE ||
@@ -104,7 +125,7 @@ export async function getSpiderJar(
       throw new Error('Pinned spider JAR failed SHA-256 verification');
     }
 
-    const info: SpiderJarInfo = {
+    return {
       buffer,
       md5: digest('md5', buffer),
       sha256,
@@ -115,15 +136,13 @@ export async function getSpiderJar(
       size: buffer.length,
       tried: 1,
     };
-    cache = info;
-    return info;
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
 export function getSpiderStatus() {
-  return cache ? { ...cache, buffer: undefined } : null;
+  return latestStatus ? { ...latestStatus } : null;
 }
 
 export function getCandidates(): string[] {

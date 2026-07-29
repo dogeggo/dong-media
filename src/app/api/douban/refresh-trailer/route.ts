@@ -1,48 +1,76 @@
 import { NextResponse } from 'next/server';
-import '@/lib/server-cache';
 
+import {
+  CACHE_POLICIES,
+  cacheService,
+  noStoreResponseHeaders,
+} from '@/lib/cache-system';
 import { fetchTrailerWithRetry } from '@/lib/douban-api';
+
+function noStoreJson(body: unknown, init?: ResponseInit) {
+  return NextResponse.json(body, {
+    ...init,
+    headers: noStoreResponseHeaders(init?.headers),
+  });
+}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id');
 
-  if (!id) {
-    return NextResponse.json(
+  if (!id || !/^\d{1,20}$/.test(id)) {
+    return noStoreJson(
       {
         code: 400,
-        message: '缺少必要参数: id',
-        error: 'MISSING_PARAMETER',
+        message: 'id 必须为有效的豆瓣数字 ID',
+        error: 'INVALID_PARAMETER',
       },
       { status: 400 },
     );
   }
 
   try {
-    const trailerUrl = (await fetchTrailerWithRetry(id)).trailerUrl;
-
-    return NextResponse.json(
-      {
-        code: 200,
-        message: '获取成功',
-        data: {
-          trailerUrl,
-        },
-      },
-      {
-        headers: {
-          // 不缓存这个 API 的响应
-          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-          Pragma: 'no-cache',
-          Expires: '0',
-        },
-      },
+    const cached = await cacheService.getOrLoadResult(
+      CACHE_POLICIES.DOUBAN_TRAILER,
+      { id },
+      () => fetchTrailerWithRetry(id, 0, false),
+      { forceRefresh: true, isNegative: (value) => !value.trailerUrl },
     );
+    if (cached.status === 'STALE') {
+      return noStoreJson(
+        {
+          code: 502,
+          message: '刷新 trailer URL 失败，已保留旧缓存',
+          error: 'STALE_PRESERVED',
+          stalePreserved: true,
+        },
+        { status: 502 },
+      );
+    }
+    const trailer = cached.value;
+    if (!trailer.trailerUrl) {
+      return noStoreJson(
+        {
+          code: 404,
+          message: '该影片没有预告片',
+          error: 'NO_TRAILER',
+        },
+        { status: 404 },
+      );
+    }
+
+    return noStoreJson({
+      code: 200,
+      message: '获取成功',
+      data: {
+        trailerUrl: trailer.trailerUrl,
+      },
+    });
   } catch (error) {
     if (error instanceof Error) {
       // 超时错误
       if (error.name === 'AbortError') {
-        return NextResponse.json(
+        return noStoreJson(
           {
             code: 504,
             message: '请求超时，豆瓣响应过慢',
@@ -54,7 +82,7 @@ export async function GET(request: Request) {
 
       // 没有预告片
       if (error.message.includes('没有预告片')) {
-        return NextResponse.json(
+        return noStoreJson(
           {
             code: 404,
             message: error.message,
@@ -65,7 +93,7 @@ export async function GET(request: Request) {
       }
 
       // 其他错误
-      return NextResponse.json(
+      return noStoreJson(
         {
           code: 500,
           message: '刷新 trailer URL 失败',
@@ -76,7 +104,7 @@ export async function GET(request: Request) {
       );
     }
 
-    return NextResponse.json(
+    return noStoreJson(
       {
         code: 500,
         message: '刷新 trailer URL 失败',

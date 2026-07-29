@@ -2,59 +2,60 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
-import { AdminConfig } from '@/lib/admin.types';
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import {
+  CACHE_POLICIES,
+  cacheService,
+  normalizeQuery,
+  noStoreResponseHeaders,
+} from '@/lib/cache-system';
 import { getAvailableApiSites, loadConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
 import { generateSearchVariants } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 
+function privateJson(body: unknown, init?: ResponseInit) {
+  return NextResponse.json(body, {
+    ...init,
+    headers: noStoreResponseHeaders(init?.headers),
+  });
+}
+
 export async function GET(request: NextRequest) {
   try {
     // 从 cookie 获取用户信息
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return privateJson({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const config = await loadConfig();
     const { searchParams } = new URL(request.url);
     const query = searchParams.get('q')?.trim();
+    const normalizedQuery = query ? normalizeQuery(query) : '';
 
-    if (!query) {
-      return NextResponse.json({ suggestions: [] });
+    if (!normalizedQuery || normalizedQuery.length > 100) {
+      return privateJson({ suggestions: [] });
     }
 
-    // 生成建议
-    const suggestions = await generateSuggestions(
-      config,
-      query,
-      authInfo.username,
-    );
-
-    // 从配置中获取缓存时间，如果没有配置则使用默认值300秒（5分钟）
-    const cacheTime = config.SiteConfig.SiteInterfaceCacheTime || 300;
-
-    return NextResponse.json(
-      { suggestions },
+    const suggestions = await cacheService.getOrLoad(
+      CACHE_POLICIES.SEARCH_SUGGESTIONS,
+      { query: normalizedQuery },
+      () => generateSuggestions(normalizedQuery, authInfo.username),
       {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-          'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Netlify-Vary': 'query',
-        },
+        scope: authInfo.username,
+        isNegative: (value) => value.length === 0,
       },
     );
+
+    return privateJson({ suggestions });
   } catch (error) {
     console.error('获取搜索建议失败', error);
-    return NextResponse.json({ error: '获取搜索建议失败' }, { status: 500 });
+    return privateJson({ error: '获取搜索建议失败' }, { status: 500 });
   }
 }
 
 async function generateSuggestions(
-  config: AdminConfig,
   query: string,
   username: string,
 ): Promise<

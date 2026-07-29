@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { loadConfig } from '@/lib/config';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
+import { getAvailableApiSites, loadConfig } from '@/lib/config';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic'; // 强制动态渲染
@@ -13,7 +14,10 @@ export async function GET(request: NextRequest) {
     // 检查用户是否登录
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401, headers: noStoreResponseHeaders() },
+      );
     }
 
     // 获取配置
@@ -35,24 +39,27 @@ export async function GET(request: NextRequest) {
     const userEnabledSources = currentUser?.tvboxEnabledSources || [];
 
     // 获取所有可用源（用于管理界面选择）
-    const allSources = (config.SourceConfig || [])
-      .filter((s) => !s.disabled)
-      .map((s) => ({ key: s.key, name: s.name }));
+    const allSources = (await getAvailableApiSites(authInfo.username)).map(
+      (source) => ({ key: source.key, name: source.name }),
+    );
 
     // 只返回 TVBox 安全配置和站点名称（不返回其他敏感信息）
-    return NextResponse.json({
-      securityConfig: securityConfig,
-      siteName: config.SiteConfig?.SiteName || 'Dong Media',
-      // 🔑 新增：用户专属信息
-      userToken: userTvboxToken,
-      userEnabledSources: userEnabledSources,
-      allSources: allSources,
-    });
+    return NextResponse.json(
+      {
+        securityConfig: securityConfig,
+        siteName: config.SiteConfig?.SiteName || 'Dong Media',
+        // 🔑 新增：用户专属信息
+        userToken: userTvboxToken,
+        userEnabledSources: userEnabledSources,
+        allSources: allSources,
+      },
+      { headers: noStoreResponseHeaders() },
+    );
   } catch (error) {
     console.error('获取 TVBox 配置失败:', error);
     return NextResponse.json(
       { error: 'Internal Server Error' },
-      { status: 500 },
+      { status: 500, headers: noStoreResponseHeaders() },
     );
   }
 }

@@ -38,6 +38,65 @@ const nextConfig = {
       },
     ],
   },
+
+  async headers() {
+    const oneWeek = 'public, max-age=604800, s-maxage=604800';
+    const staticMedia = [
+      '/icons/:path*',
+      '/media/:path*',
+      '/images/:path*',
+      '/videos/:path*',
+      '/logo.png',
+      '/favicon.ico',
+    ].map((source) => ({
+      source,
+      headers: [{ key: 'Cache-Control', value: oneWeek }],
+    }));
+    const privateNoStore = [
+      '/api',
+      '/api/admin/:path*',
+      '/api/auth/:path*',
+      '/api/user/:path*',
+      '/api/login',
+      '/api/logout',
+      '/api/register',
+      '/api/cron',
+      '/api/change-password',
+      '/api/playrecords',
+      '/api/favorites',
+      '/api/favorites/:path*',
+      '/api/searchhistory',
+      '/api/skipconfigs',
+      '/api/episode-skip-config',
+      '/api/search',
+      '/api/search/:path*',
+      '/api/sources',
+      '/api/parse',
+      '/api/detail',
+      '/api/live/:path*',
+      '/api/source-browser/:path*',
+      '/api/source-test',
+      '/api/source-test/:path*',
+      '/api/tvbox',
+      '/api/tvbox/:path*',
+      '/api/tvbox-config',
+      '/api/proxy-status',
+      '/api/proxy/:path*',
+      '/api/netdisk/:path*',
+      '/api/youtube/:path*',
+      '/api/acg/:path*',
+    ].map((source) => ({
+      source,
+      headers: [
+        {
+          key: 'Cache-Control',
+          value: 'private, no-store, max-age=0',
+        },
+        { key: 'Pragma', value: 'no-cache' },
+      ],
+    }));
+    return [...staticMedia, ...privateNoStore];
+  },
 };
 
 module.exports = nextConfig;

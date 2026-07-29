@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { getAvailableApiSites, loadConfig, refineConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { getDetailFromApi, searchFromApi } from '@/lib/downstream';
@@ -22,16 +23,22 @@ export async function GET(request: NextRequest) {
     hostname !== 'localhost' &&
     hostname !== '0.0.0.0'
   ) {
-    return new NextResponse('Unauthorized', { status: 401 });
+    return new NextResponse('Unauthorized', {
+      status: 401,
+      headers: noStoreResponseHeaders(),
+    });
   }
 
   if (isRunning) {
     console.log('⚠️ Cron job 已在运行中，跳过此次请求');
-    return NextResponse.json({
-      success: false,
-      message: 'Cron job already running',
-      timestamp: new Date().toISOString(),
-    });
+    return NextResponse.json(
+      {
+        success: false,
+        message: 'Cron job already running',
+        timestamp: new Date().toISOString(),
+      },
+      { headers: noStoreResponseHeaders() },
+    );
   }
 
   try {
@@ -40,11 +47,14 @@ export async function GET(request: NextRequest) {
 
     await cronJob();
 
-    return NextResponse.json({
-      success: true,
-      message: 'Cron job executed successfully',
-      timestamp: new Date().toISOString(),
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        message: 'Cron job executed successfully',
+        timestamp: new Date().toISOString(),
+      },
+      { headers: noStoreResponseHeaders() },
+    );
   } catch (error) {
     console.error('Cron job failed:', error);
 
@@ -55,7 +65,7 @@ export async function GET(request: NextRequest) {
         error: error instanceof Error ? error.message : 'Unknown error',
         timestamp: new Date().toISOString(),
       },
-      { status: 500 },
+      { status: 500, headers: noStoreResponseHeaders() },
     );
   } finally {
     isRunning = false;
@@ -109,22 +119,22 @@ async function refreshAllLiveChannels() {
     .filter((liveInfo) => !liveInfo.disabled)
     .map(async (liveInfo) => {
       try {
-        const nums = await refreshLiveChannels(liveInfo);
-        liveInfo.channelNumber = nums;
+        const channels = await refreshLiveChannels(liveInfo);
+        liveInfo.channelNumber = channels?.channelNumber || 0;
       } catch (error) {
         console.error(
           `刷新直播源失败 [${liveInfo.name || liveInfo.key}]:`,
           error,
         );
-        liveInfo.channelNumber = 0;
       }
     });
 
   // 等待所有刷新任务完成
   await Promise.all(refreshPromises);
 
-  // 保存配置
-  await db.saveAdminConfig(config);
+  // 这里只持久化频道数量。刷新结果已经写入当前 live generation，
+  // 再次全局失效会让刚完成的刷新立即丢失。
+  await db.saveAdminConfig(config, { invalidateCache: false });
 }
 
 async function refreshConfig() {

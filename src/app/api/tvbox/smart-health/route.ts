@@ -143,8 +143,8 @@ export async function GET(request: NextRequest) {
     // 获取当前Spider状态
     const spiderStatus = getSpiderStatus();
 
-    // 强制刷新获取最新JAR状态
-    const freshSpider = await getSpiderJar(true);
+    // 健康检查读取统一缓存；强制刷新只允许走受保护的管理入口。
+    const freshSpider = await getSpiderJar(false);
 
     // 测试关键源的可达性（使用实际验证过的源）
     const testSources = getCandidates();

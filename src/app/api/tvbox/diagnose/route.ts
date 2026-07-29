@@ -1,6 +1,7 @@
 /* eslint-disable no-console */
 import { NextRequest, NextResponse } from 'next/server';
 
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
 import { GET as getTVBoxConfig } from '../route';
@@ -261,7 +262,7 @@ export async function GET(req: NextRequest) {
       result.hasJson &&
       (!result.issues || result.issues.length === 0);
     return NextResponse.json(result, {
-      headers: { 'cache-control': 'no-store' },
+      headers: noStoreResponseHeaders(),
     });
   } catch (e: any) {
     console.error('Diagnose failed', e);

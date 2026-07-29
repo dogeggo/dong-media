@@ -3,11 +3,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { Favorite } from '@/lib/types';
 
 export const runtime = 'nodejs';
+
+function json(body: unknown, init?: ResponseInit) {
+  return NextResponse.json(body, {
+    ...init,
+    headers: noStoreResponseHeaders(init?.headers),
+  });
+}
 
 /**
  * GET /api/favorites
@@ -21,7 +29,7 @@ export async function GET(request: NextRequest) {
     // 从 cookie 获取用户信息
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const config = await loadConfig();
@@ -31,10 +39,10 @@ export async function GET(request: NextRequest) {
         (u) => u.username === authInfo.username,
       );
       if (!user) {
-        return NextResponse.json({ error: '用户不存在' }, { status: 401 });
+        return json({ error: '用户不存在' }, { status: 401 });
       }
       if (user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
+        return json({ error: '用户已被封禁' }, { status: 401 });
       }
     }
 
@@ -45,13 +53,10 @@ export async function GET(request: NextRequest) {
     if (key) {
       const [source, id] = key.split('+');
       if (!source || !id) {
-        return NextResponse.json(
-          { error: 'Invalid key format' },
-          { status: 400 },
-        );
+        return json({ error: 'Invalid key format' }, { status: 400 });
       }
       const fav = await db.getFavorite(authInfo.username, source, id);
-      return NextResponse.json(fav, { status: 200 });
+      return json(fav, { status: 200 });
     }
 
     // 查询全部收藏 - 开始性能监控
@@ -77,13 +82,10 @@ export async function GET(request: NextRequest) {
         `⏱️  [性能提示] 用户 ${authInfo.username} 的收藏查询耗时 ${durationSeconds}s，性能尚可。收藏数: ${count}`,
       );
     }
-    return NextResponse.json(favorites, { status: 200 });
+    return json(favorites, { status: 200 });
   } catch (err) {
     console.error('获取收藏失败', err);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 },
-    );
+    return json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }
 
@@ -96,7 +98,7 @@ export async function POST(request: NextRequest) {
     // 从 cookie 获取用户信息
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const config = await loadConfig();
@@ -106,10 +108,10 @@ export async function POST(request: NextRequest) {
         (u) => u.username === authInfo.username,
       );
       if (!user) {
-        return NextResponse.json({ error: '用户不存在' }, { status: 401 });
+        return json({ error: '用户不存在' }, { status: 401 });
       }
       if (user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
+        return json({ error: '用户已被封禁' }, { status: 401 });
       }
     }
 
@@ -117,26 +119,17 @@ export async function POST(request: NextRequest) {
     const { key, favorite }: { key: string; favorite: Favorite } = body;
 
     if (!key || !favorite) {
-      return NextResponse.json(
-        { error: 'Missing key or favorite' },
-        { status: 400 },
-      );
+      return json({ error: 'Missing key or favorite' }, { status: 400 });
     }
 
     // 验证必要字段
     if (!favorite.title || !favorite.source_name) {
-      return NextResponse.json(
-        { error: 'Invalid favorite data' },
-        { status: 400 },
-      );
+      return json({ error: 'Invalid favorite data' }, { status: 400 });
     }
 
     const [source, id] = key.split('+');
     if (!source || !id) {
-      return NextResponse.json(
-        { error: 'Invalid key format' },
-        { status: 400 },
-      );
+      return json({ error: 'Invalid key format' }, { status: 400 });
     }
 
     const finalFavorite = {
@@ -146,13 +139,11 @@ export async function POST(request: NextRequest) {
 
     await db.saveFavorite(authInfo.username, source, id, finalFavorite);
 
-    return NextResponse.json({ success: true }, { status: 200 });
+    const favorites = await db.getAllFavorites(authInfo.username);
+    return json({ success: true, favorites }, { status: 200 });
   } catch (err) {
     console.error('保存收藏失败', err);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 },
-    );
+    return json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }
 
@@ -167,7 +158,7 @@ export async function DELETE(request: NextRequest) {
     // 从 cookie 获取用户信息
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const config = await loadConfig();
@@ -177,10 +168,10 @@ export async function DELETE(request: NextRequest) {
         (u) => u.username === authInfo.username,
       );
       if (!user) {
-        return NextResponse.json({ error: '用户不存在' }, { status: 401 });
+        return json({ error: '用户不存在' }, { status: 401 });
       }
       if (user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
+        return json({ error: '用户已被封禁' }, { status: 401 });
       }
     }
 
@@ -192,10 +183,7 @@ export async function DELETE(request: NextRequest) {
       // 删除单条
       const [source, id] = key.split('+');
       if (!source || !id) {
-        return NextResponse.json(
-          { error: 'Invalid key format' },
-          { status: 400 },
-        );
+        return json({ error: 'Invalid key format' }, { status: 400 });
       }
       await db.deleteFavorite(username, source, id);
     } else {
@@ -217,12 +205,10 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    return NextResponse.json({ success: true }, { status: 200 });
+    const favorites = await db.getAllFavorites(username);
+    return json({ success: true, favorites }, { status: 200 });
   } catch (err) {
     console.error('删除收藏失败', err);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 },
-    );
+    return json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }

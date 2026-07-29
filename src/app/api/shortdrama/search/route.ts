@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import '@/lib/server-cache';
 
-import { SEARCH_CACHE_EXPIRE } from '@/lib/cache';
+import {
+  CACHE_POLICIES,
+  cacheService,
+  hasOnlyUniqueSearchParams,
+  normalizeQuery,
+  noStoreResponseHeaders,
+  publicApiResponseHeaders,
+} from '@/lib/cache-system';
 import { searchShortDramas } from '@/lib/shortdrama-api';
 
 // 强制动态路由，禁用所有缓存
@@ -12,50 +18,48 @@ export const fetchCache = 'force-no-store';
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = request.nextUrl;
+    if (!hasOnlyUniqueSearchParams(searchParams, ['query', 'page'])) {
+      return NextResponse.json(
+        { error: '包含未知或重复参数' },
+        { status: 400, headers: noStoreResponseHeaders() },
+      );
+    }
     const query = searchParams.get('query');
     const page = searchParams.get('page');
 
-    if (!query) {
+    const normalizedQuery = query ? normalizeQuery(query) : '';
+    if (!normalizedQuery || normalizedQuery.length > 100) {
       return NextResponse.json(
-        { error: '缺少必要参数: query' },
-        { status: 400 },
+        { error: 'query 必须为 1-100 个字符' },
+        { status: 400, headers: noStoreResponseHeaders() },
       );
     }
 
-    const pageNum = page ? parseInt(page) : 1;
+    const pageNum = page ? Number(page) : 1;
 
-    if (isNaN(pageNum)) {
-      return NextResponse.json({ error: '参数格式错误' }, { status: 400 });
+    if (!Number.isSafeInteger(pageNum) || pageNum < 1 || pageNum > 1_000) {
+      return NextResponse.json(
+        { error: '参数格式错误' },
+        { status: 400, headers: noStoreResponseHeaders() },
+      );
     }
-    const result = await searchShortDramas(query, pageNum);
-    // 设置与网页端一致的缓存策略（搜索结果: 1小时）
-    const response = NextResponse.json(result);
-    // 1小时 = 3600秒（搜索结果更新频繁，短期缓存）
-    const cacheTime = SEARCH_CACHE_EXPIRE;
-    response.headers.set(
-      'Cache-Control',
-      `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
+    const cached = await cacheService.getOrLoadResult(
+      CACHE_POLICIES.SHORTDRAMA_SEARCH,
+      { query: normalizedQuery, page: pageNum },
+      () => searchShortDramas(normalizedQuery, pageNum),
+      { isNegative: (value) => value.list.length === 0 },
     );
-    response.headers.set('CDN-Cache-Control', `public, s-maxage=${cacheTime}`);
-    response.headers.set(
-      'Vercel-CDN-Cache-Control',
-      `public, s-maxage=${cacheTime}`,
-    );
-
-    // 调试信息
-    response.headers.set('X-Cache-Duration', '1hour');
-    response.headers.set(
-      'X-Cache-Expires-At',
-      new Date(Date.now() + cacheTime * 1000).toISOString(),
-    );
-    response.headers.set('X-Debug-Timestamp', new Date().toISOString());
-
-    // Vary头确保不同设备有不同缓存
-    response.headers.set('Vary', 'Accept-Encoding, User-Agent');
-
-    return response;
+    return NextResponse.json(cached.value, {
+      headers: publicApiResponseHeaders(CACHE_POLICIES.SHORTDRAMA_SEARCH, {
+        ttlSeconds: cached.ttlRemaining,
+        negative: cached.negative,
+      }),
+    });
   } catch (error) {
     console.error('搜索短剧失败:', error);
-    return NextResponse.json({ error: '服务器内部错误' }, { status: 500 });
+    return NextResponse.json(
+      { error: '服务器内部错误' },
+      { status: 500, headers: noStoreResponseHeaders() },
+    );
   }
 }

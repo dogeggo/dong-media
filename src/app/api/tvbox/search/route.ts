@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
+import { privateResponseHeaders } from '@/lib/cache-system';
 import { searchFromApi } from '@/lib/downstream';
 import { authenticateRequest } from '@/lib/request-auth';
 import { rankSearchResults } from '@/lib/search-ranking';
@@ -214,14 +215,13 @@ export async function GET(request: NextRequest) {
     };
 
     return NextResponse.json(response, {
-      headers: {
-        'Cache-Control': 'private, max-age=300',
+      headers: privateResponseHeaders(300, {
         'X-Content-Type-Options': 'nosniff',
         'X-Robots-Tag': 'noindex, nofollow, noarchive',
         'X-Processing-Time': `${processingTime}ms`,
         'X-Result-Count': `${results.length}`,
         'X-Filter-Applied': shouldFilter ? 'true' : 'false',
-      },
+      }),
     });
   } catch (error) {
     console.error('[TVBox Search Proxy] Error:', error);

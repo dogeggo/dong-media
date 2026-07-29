@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import React, { useCallback, useEffect, useState } from 'react';
 
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
+import { subscribeToDataUpdates } from '@/lib/db.client';
 import { PlayRecord, ReleaseCalendarItem, UserStat } from '@/lib/types';
 import { processImageUrl } from '@/lib/utils';
 import {
@@ -301,70 +302,12 @@ const PlayStatsPage: React.FC = () => {
     console.log('fetchStats 完成');
   }, [isAdmin, fetchAdminStats, fetchUserStats]);
 
-  // 清理过期缓存
-  const cleanExpiredCache = useCallback(() => {
-    const CACHE_DURATION = 2 * 60 * 60 * 1000; // 2小时
-    const now = Date.now();
-
-    // 检查即将上映缓存
-    const cacheTimeKey = 'upcoming_releases_cache_time';
-    const cachedTime = localStorage.getItem(cacheTimeKey);
-
-    if (cachedTime) {
-      const age = now - parseInt(cachedTime);
-      if (age >= CACHE_DURATION) {
-        localStorage.removeItem('upcoming_releases_cache');
-        localStorage.removeItem(cacheTimeKey);
-        console.log('已清理过期的即将上映缓存');
-      }
-    }
-
-    // 清理其他可能过期的缓存项
-    const keysToCheck = [
-      'moontv_watching_updates',
-      'moontv_last_update_check',
-      'release_calendar_all_data',
-      'release_calendar_all_data_time',
-    ];
-
-    // 检查追番更新缓存（这个有不同的过期时间）
-    const watchingUpdateTime = localStorage.getItem('moontv_last_update_check');
-    if (watchingUpdateTime) {
-      const WATCHING_CACHE_DURATION = 30 * 60 * 1000; // 30分钟
-      const age = now - parseInt(watchingUpdateTime);
-      if (age >= WATCHING_CACHE_DURATION) {
-        localStorage.removeItem('moontv_watching_updates');
-        localStorage.removeItem('moontv_last_update_check');
-        console.log('已清理过期的追番更新缓存');
-      }
-    }
-
-    // 检查发布日历缓存
-    keysToCheck.forEach((key) => {
-      if (key.endsWith('_time')) {
-        const timeStr = localStorage.getItem(key);
-        if (timeStr) {
-          const age = now - parseInt(timeStr);
-          if (age >= CACHE_DURATION) {
-            const dataKey = key.replace('_time', '');
-            localStorage.removeItem(dataKey);
-            localStorage.removeItem(key);
-            console.log(`已清理过期缓存: ${dataKey}`);
-          }
-        }
-      }
-    });
-  }, []);
-
-  // 获取即将上映的内容（不再使用localStorage缓存，完全依赖API数据库缓存）
+  // 获取即将上映的内容，业务缓存统一由发布日历 API 管理。
   const fetchUpcomingReleases = useCallback(async () => {
     try {
       setUpcomingLoading(true);
 
-      // 清理过期的localStorage缓存（兼容性清理）
-      cleanExpiredCache();
-
-      // 🌐 直接从API获取数据（API有数据库缓存，24小时有效）
+      // 🌐 直接从 API 获取数据。
       console.log('🌐 正在从API获取即将上映数据...');
 
       // 获取未来2周的发布内容，包含更多电影
@@ -395,7 +338,7 @@ const PlayStatsPage: React.FC = () => {
       setUpcomingLoading(false);
       setUpcomingInitialized(true); // 标记已经初始化完成
     }
-  }, [cleanExpiredCache]);
+  }, []);
 
   // 处理刷新按钮点击
   const handleRefreshClick = async () => {
@@ -403,17 +346,7 @@ const PlayStatsPage: React.FC = () => {
     setLoading(true);
 
     try {
-      // 清除追番更新缓存
-      localStorage.removeItem('moontv_watching_updates');
-      localStorage.removeItem('moontv_last_update_check');
-
-      // 清除遗留的即将上映缓存（兼容性清理）
-      localStorage.removeItem('upcoming_releases_cache');
-      localStorage.removeItem('upcoming_releases_cache_time');
-
-      console.log('已清除所有localStorage缓存');
-
-      // 🔧 优化：强制刷新追番更新，跳过缓存时间检查
+      // 强制刷新 Query Cache 中的追番更新。
       await checkWatchingUpdates(true);
       console.log('已重新检查追番更新');
 
@@ -531,15 +464,10 @@ const PlayStatsPage: React.FC = () => {
         });
       };
 
-      // 监听播放记录更新事件
-      window.addEventListener('playRecordsUpdated', handlePlayRecordsUpdate);
-
-      return () => {
-        window.removeEventListener(
-          'playRecordsUpdated',
-          handlePlayRecordsUpdate,
-        );
-      };
+      return subscribeToDataUpdates(
+        'playRecordsUpdated',
+        handlePlayRecordsUpdate,
+      );
     }
   }, [authInfo]);
 

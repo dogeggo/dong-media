@@ -206,8 +206,21 @@ export class DbManager {
     return this.storage.getAdminConfig();
   }
 
-  async saveAdminConfig(config: AdminConfig): Promise<void> {
+  async saveAdminConfig(
+    config: AdminConfig,
+    options: { invalidateCache?: boolean } = {},
+  ): Promise<void> {
     await this.storage.setAdminConfig(config);
+    if (options.invalidateCache === false) return;
+    const { cacheService } = await import('@/lib/cache-system');
+    await cacheService.invalidateTags([
+      'config',
+      'sources',
+      'live',
+      'shortdrama',
+      'youtube',
+      'netdisk',
+    ]);
   }
 
   // ---------- 跳过片头片尾配置 ----------
@@ -277,27 +290,6 @@ export class DbManager {
   // ---------- 数据清理 ----------
   async clearAllData(): Promise<void> {
     await this.storage.clearAllData();
-  }
-
-  // ---------- 通用缓存方法 ----------
-  async getCache(key: string): Promise<any | null> {
-    return await this.storage.getCache(key);
-  }
-
-  async setCache(
-    key: string,
-    data: any,
-    expireSeconds?: number,
-  ): Promise<void> {
-    await this.storage.setCache(key, data, expireSeconds);
-  }
-
-  async deleteCache(key: string): Promise<void> {
-    await this.storage.deleteCache(key);
-  }
-
-  async clearExpiredCache(prefix?: string): Promise<void> {
-    await this.storage.clearExpiredCache(prefix);
   }
 
   async getUserStat(userName: string): Promise<UserStat> {

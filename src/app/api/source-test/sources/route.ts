@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAdminRoleFromRequest } from '@/lib/admin-auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 
 export const runtime = 'nodejs';
@@ -27,7 +28,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       { sources },
       {
-        headers: { 'Cache-Control': 'no-store' },
+        headers: noStoreResponseHeaders(),
       },
     );
   } catch (_error) {

@@ -187,6 +187,20 @@ export abstract class BaseRedisStorage implements IStorage {
     return this.client;
   }
 
+  private scanKeys(pattern: string): Promise<string[]> {
+    return this.withRetry(async () => {
+      const keys: string[] = [];
+      for await (const page of this.client.scanIterator({
+        MATCH: pattern,
+        COUNT: 200,
+      })) {
+        const pageKeys = Array.isArray(page) ? page : [page];
+        keys.push(...pageKeys.map(ensureString));
+      }
+      return keys;
+    });
+  }
+
   // ---------- 播放记录 ----------
   // 使用 Hash 结构存储所有播放记录，提升性能
   private prHashKey(user: string) {
@@ -323,18 +337,14 @@ export abstract class BaseRedisStorage implements IStorage {
 
     // 删除跳过片头片尾配置
     const skipConfigPattern = `u:${userName}:skip:*`;
-    const skipConfigKeys = await this.withRetry(() =>
-      this.client.keys(skipConfigPattern),
-    );
+    const skipConfigKeys = await this.scanKeys(skipConfigPattern);
     if (skipConfigKeys.length > 0) {
       await this.withRetry(() => this.client.del(skipConfigKeys));
     }
 
     // 删除剧集跳过配置
     const episodeSkipPattern = `u:${userName}:episodeskip:*`;
-    const episodeSkipKeys = await this.withRetry(() =>
-      this.client.keys(episodeSkipPattern),
-    );
+    const episodeSkipKeys = await this.scanKeys(episodeSkipPattern);
     if (episodeSkipKeys.length > 0) {
       await this.withRetry(() => this.client.del(episodeSkipKeys));
     }
@@ -567,7 +577,7 @@ export abstract class BaseRedisStorage implements IStorage {
   // ---------- 获取全部用户 ----------
   async getAllUsers(): Promise<string[]> {
     // 获取 V2 用户（u:*:info）
-    const v2Keys = await this.withRetry(() => this.client.keys('u:*:info'));
+    const v2Keys = await this.scanKeys('u:*:info');
     const v2Users = v2Keys
       .map((k) => {
         const match = k.match(/^u:(.+?):info$/);
@@ -642,7 +652,7 @@ export abstract class BaseRedisStorage implements IStorage {
     userName: string,
   ): Promise<{ [key: string]: EpisodeSkipConfig }> {
     const pattern = `u:${userName}:skip:*`;
-    const keys = await this.withRetry(() => this.client.keys(pattern));
+    const keys = await this.scanKeys(pattern);
 
     if (keys.length === 0) {
       return {};
@@ -712,7 +722,7 @@ export abstract class BaseRedisStorage implements IStorage {
     userName: string,
   ): Promise<{ [key: string]: EpisodeSkipConfig }> {
     const pattern = `u:${userName}:episodeskip:*`;
-    const keys = await this.withRetry(() => this.client.keys(pattern));
+    const keys = await this.scanKeys(pattern);
 
     if (keys.length === 0) {
       return {};
@@ -759,110 +769,6 @@ export abstract class BaseRedisStorage implements IStorage {
     }
   }
 
-  // ---------- 通用缓存方法 ----------
-  private cacheKey(key: string) {
-    return `cache:${key}`;
-  }
-
-  async getCache(key: string): Promise<any | null> {
-    try {
-      const cacheKey = this.cacheKey(key);
-      const val = await this.withRetry(() => this.client.get(cacheKey));
-
-      if (!val) return null;
-
-      // 智能处理返回值：兼容不同Redis客户端的行为
-      if (typeof val === 'string') {
-        // 检查是否是HTML错误页面
-        if (
-          val.trim().startsWith('<!DOCTYPE') ||
-          val.trim().startsWith('<html')
-        ) {
-          console.error(
-            `${this.config.clientName} returned HTML instead of JSON. Connection issue detected.`,
-          );
-          return null;
-        }
-
-        try {
-          return JSON.parse(val);
-        } catch (parseError) {
-          console.warn(
-            `${this.config.clientName} JSON解析失败，返回原字符串 (key: ${key}):`,
-            parseError,
-          );
-          return val; // 解析失败返回原字符串
-        }
-      } else {
-        // 某些Redis客户端可能直接返回解析后的对象
-        return val;
-      }
-    } catch (error: any) {
-      console.error(
-        `${this.config.clientName} getCache error (key: ${key}):`,
-        error,
-      );
-      return null;
-    }
-  }
-
-  async setCache(
-    key: string,
-    data: any,
-    expireSeconds?: number,
-  ): Promise<void> {
-    try {
-      const cacheKey = this.cacheKey(key);
-      const value = JSON.stringify(data);
-
-      if (expireSeconds !== undefined) {
-        // 验证 TTL 值的有效性
-        if (expireSeconds <= 0) {
-          const error = new Error(
-            `${this.config.clientName} Invalid TTL: ${expireSeconds} seconds. TTL must be positive.`,
-          );
-          console.error(error.message);
-          throw error;
-        }
-
-        // Kvrocks 兼容性：确保 TTL 是整数
-        const ttl = Math.floor(expireSeconds);
-
-        if (ttl !== expireSeconds) {
-          console.warn(
-            `${this.config.clientName} TTL rounded from ${expireSeconds} to ${ttl} seconds`,
-          );
-        }
-        await this.withRetry(() => this.client.setEx(cacheKey, ttl, value));
-      } else {
-        await this.withRetry(() => this.client.set(cacheKey, value));
-      }
-    } catch (error) {
-      console.error(
-        `${this.config.clientName} setCache error (key: ${key}):`,
-        error,
-      );
-      throw error; // 重新抛出错误以便上层处理
-    }
-  }
-
-  async deleteCache(key: string): Promise<void> {
-    await this.withRetry(() => this.client.del(this.cacheKey(key)));
-  }
-
-  async clearExpiredCache(prefix?: string): Promise<void> {
-    // Redis的TTL机制会自动清理过期数据，这里主要用于手动清理
-    // 可以根据需要实现特定前缀的缓存清理
-    const pattern = prefix ? `cache:${prefix}*` : 'cache:*';
-    const keys = await this.withRetry(() => this.client.keys(pattern));
-
-    if (keys.length > 0) {
-      await this.withRetry(() => this.client.del(keys));
-      console.log(
-        `Cleared ${keys.length} cache entries with pattern: ${pattern}`,
-      );
-    }
-  }
   // 获取用户播放统计
   async getUserStat(userName: string): Promise<UserStat> {
     try {

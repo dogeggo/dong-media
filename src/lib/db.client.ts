@@ -1,1951 +1,620 @@
-/* eslint-disable no-console */
 'use client';
 
-/**
- * 仅在浏览器端使用的数据库工具，目前基于 localStorage 实现。
- * 之所以单独拆分文件，是为了避免在客户端 bundle 中引入 `fs`, `path` 等 Node.js 内置模块，
- * 从而解决诸如 "Module not found: Can't resolve 'fs'" 的问题。
- *
- * 功能：
- * 1. 获取全部播放记录（getAllPlayRecords）。
- * 2. 保存播放记录（savePlayRecord）。
- * 3. 数据库存储模式下的混合缓存策略，提升用户体验。
- *
- * 如后续需要在客户端读取收藏等其它数据，可按同样方式在此文件中补充实现。
- */
+import { getQueryClient } from './get-query-client';
+import type {
+  EpisodeSkipConfig,
+  Favorite,
+  PlayRecord,
+  SkipSegment,
+} from './types';
+import {
+  getCurrentUserDataScope,
+  getUserDataStorageType,
+  userDataQueryKey,
+  type UserDataQueryKind,
+  userQueryKeys,
+} from './user-query-keys';
 
-import { getAuthInfoFromBrowserCookie } from './auth';
-import type { PlayRecord } from './types';
-import { EpisodeSkipConfig, UserStat } from './types';
-import { forceClearWatchingUpdatesCache } from './watching-updates';
+export type { EpisodeSkipConfig, Favorite, PlayRecord, SkipSegment };
 
-// 重新导出类型以保持API兼容性
-export type { EpisodeSkipConfig, PlayRecord, SkipSegment } from './types';
+const STORAGE_KEYS = {
+  playRecords: 'moontv_play_records',
+  favorites: 'moontv_favorites',
+  searchHistory: 'moontv_search_history',
+  skipConfigs: 'moontv_skip_configs',
+} as const;
 
-// 全局错误触发函数
-function triggerGlobalError(message: string) {
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(
-      new CustomEvent('globalError', {
-        detail: { message },
-      }),
-    );
-  }
-}
-
-// 为了向后兼容，保留UserStats类型别名
-export type UserStats = UserStat;
-
-// ---- 收藏类型 ----
-export interface Favorite {
-  title: string;
-  source_name: string;
-  year: string;
-  cover: string;
-  total_episodes: number;
-  save_time: number;
-  search_title?: string;
-  origin?: 'vod' | 'live';
-  type?: string; // 内容类型（movie/tv/variety/shortdrama等）
-  releaseDate?: string; // 上映日期 (YYYY-MM-DD)，用于即将上映内容
-  remarks?: string; // 备注信息（如"X天后上映"、"已上映"等）
-}
-
-// ---- 缓存数据结构 ----
-interface CacheData<T> {
-  data: T;
-  timestamp: number;
-  version: string;
-}
-
-interface UserCacheStore {
-  playRecords?: CacheData<Record<string, PlayRecord>>;
-  favorites?: CacheData<Record<string, Favorite>>;
-  searchHistory?: CacheData<string[]>;
-  skipConfigs?: CacheData<Record<string, EpisodeSkipConfig>>;
-  userStats?: CacheData<UserStats>; // 添加用户统计数据缓存
-  // 注意：豆瓣缓存已迁移到统一存储，不再需要这里的缓存结构
-}
-
-// ---- 常量 ----
-const PLAY_RECORDS_KEY = 'moontv_play_records';
-const FAVORITES_KEY = 'moontv_favorites';
-const SEARCH_HISTORY_KEY = 'moontv_search_history';
-
-// 缓存相关常量
-const CACHE_PREFIX = 'moontv_cache_';
-const CACHE_VERSION = '1.0.0';
-const CACHE_EXPIRE_TIME = 60 * 60 * 1000; // 一小时缓存过期
-const PLAY_RECORDS_CACHE_EXPIRE_TIME = 5 * 60 * 1000; // 播放记录5分钟缓存过期，与新集数更新检查保持一致
-
-// 注意：豆瓣缓存配置已迁移到 douban.client.ts
-
-// ---- 环境变量 ----
-const STORAGE_TYPE = (() => {
-  const raw =
-    (typeof window !== 'undefined' &&
-      (window as any).RUNTIME_CONFIG?.STORAGE_TYPE) ||
-    (process.env.STORAGE_TYPE as
-      | 'localstorage'
-      | 'redis'
-      | 'kvrocks'
-      | undefined) ||
-    'localstorage';
-  return raw;
-})();
-
-// ---------------- 搜索历史相关常量 ----------------
-// 搜索历史最大保存条数
 const SEARCH_HISTORY_LIMIT = 20;
+const USER_DATA_EVENT = 'dongMediaUserDataChanged';
+const USER_DATA_CHANNEL = 'dong-media-user-data-v2';
 
-// ---- 内存缓存（用于 Kvrocks 模式）----
-const memoryCache: Map<string, UserCacheStore> = new Map();
+export type UserDataUpdateEvent =
+  | 'playRecordsUpdated'
+  | 'favoritesUpdated'
+  | 'searchHistoryUpdated'
+  | 'skipConfigsUpdated';
 
-// ---- 请求去重和节流变量 ----
-// 用于避免在短时间内重复触发后台同步请求，解决 net::ERR_INSUFFICIENT_RESOURCES 问题
-const SYNC_THROTTLE_TIME = 10000; // 10秒内不重复触发后台同步
+const eventKind: Record<UserDataUpdateEvent, UserDataQueryKind> = {
+  playRecordsUpdated: 'play-records',
+  favoritesUpdated: 'favorites',
+  searchHistoryUpdated: 'search-history',
+  skipConfigsUpdated: 'skip-configs',
+};
 
-let pendingFavoritesRequest: Promise<Record<string, Favorite>> | null = null;
-let lastFavoritesSyncTime = 0;
+interface UserDataChange {
+  event: UserDataUpdateEvent;
+  kind: UserDataQueryKind;
+  scope: string;
+  data?: unknown;
+}
 
-let pendingSearchHistorySync: Promise<void> | null = null;
-let lastSearchHistorySyncTime = 0;
+let channel: BroadcastChannel | null | undefined;
 
-let pendingSkipConfigsSync: Promise<void> | null = null;
-let lastSkipConfigsSyncTime = 0;
-
-// ---- 缓存管理器 ----
-class HybridCacheManager {
-  private static instance: HybridCacheManager;
-
-  static getInstance(): HybridCacheManager {
-    if (!HybridCacheManager.instance) {
-      HybridCacheManager.instance = new HybridCacheManager();
-    }
-    return HybridCacheManager.instance;
+function getBroadcastChannel(): BroadcastChannel | null {
+  if (channel !== undefined) return channel;
+  if (typeof window === 'undefined' || !('BroadcastChannel' in window)) {
+    channel = null;
+    return null;
   }
-
-  /**
-   * 获取当前用户名
-   */
-  private getCurrentUsername(): string | null {
-    const authInfo = getAuthInfoFromBrowserCookie();
-    return authInfo?.username || null;
-  }
-
-  /**
-   * 生成用户专属的缓存key
-   */
-  private getUserCacheKey(username: string): string {
-    return `${CACHE_PREFIX}${username}`;
-  }
-
-  /**
-   * 获取用户缓存数据
-   */
-  private getUserCache(username: string): UserCacheStore {
-    if (typeof window === 'undefined') return {};
-
-    // 🔧 优化：Kvrocks 模式使用内存缓存
-    if (STORAGE_TYPE !== 'localstorage') {
-      const cacheKey = this.getUserCacheKey(username);
-      return memoryCache.get(cacheKey) || {};
-    }
-
-    try {
-      const cacheKey = this.getUserCacheKey(username);
-      const cached = localStorage.getItem(cacheKey);
-      return cached ? JSON.parse(cached) : {};
-    } catch (error) {
-      console.warn('获取用户缓存失败:', error);
-      return {};
-    }
-  }
-
-  /**
-   * 保存用户缓存数据
-   */
-  private saveUserCache(username: string, cache: UserCacheStore): void {
-    if (typeof window === 'undefined') return;
-
-    // 🔧 优化：Kvrocks 模式使用内存缓存（不占用 localStorage，避免 QuotaExceededError）
-    if (STORAGE_TYPE !== 'localstorage') {
-      const cacheKey = this.getUserCacheKey(username);
-      memoryCache.set(cacheKey, cache);
-      return;
-    }
-
-    try {
-      // 检查缓存大小，超过15MB时清理旧数据
-      const cacheSize = JSON.stringify(cache).length;
-      if (cacheSize > 15 * 1024 * 1024) {
-        console.warn('缓存过大，清理旧数据');
-        this.cleanOldCache(cache);
-      }
-
-      const cacheKey = this.getUserCacheKey(username);
-      localStorage.setItem(cacheKey, JSON.stringify(cache));
-    } catch (error) {
-      console.warn('保存用户缓存失败:', error);
-      // 存储空间不足时清理缓存后重试
+  channel = new BroadcastChannel(USER_DATA_CHANNEL);
+  channel.addEventListener(
+    'message',
+    (message: MessageEvent<UserDataChange>) => {
+      const change = message.data;
+      const expectedKind = change ? eventKind[change.event] : undefined;
       if (
-        error instanceof DOMException &&
-        error.name === 'QuotaExceededError'
+        !change ||
+        !expectedKind ||
+        change.kind !== expectedKind ||
+        change.scope !== getCurrentUserDataScope()
       ) {
-        this.clearAllCache();
-        try {
-          const cacheKey = this.getUserCacheKey(username);
-          localStorage.setItem(cacheKey, JSON.stringify(cache));
-        } catch (retryError) {
-          console.error('重试保存缓存仍然失败:', retryError);
-        }
+        return;
       }
-    }
-  }
-
-  /**
-   * 清理过期缓存数据
-   */
-  private cleanOldCache(cache: UserCacheStore): void {
-    const now = Date.now();
-    const maxAge = 60 * 24 * 60 * 60 * 1000; // 两个月
-
-    // 清理过期的播放记录缓存
-    if (cache.playRecords && now - cache.playRecords.timestamp > maxAge) {
-      delete cache.playRecords;
-    }
-
-    // 清理过期的收藏缓存
-    if (cache.favorites && now - cache.favorites.timestamp > maxAge) {
-      delete cache.favorites;
-    }
-
-    // 注意：豆瓣缓存已迁移到统一存储，不再在这里处理
-  }
-
-  /**
-   * 清理所有缓存
-   */
-  private clearAllCache(): void {
-    const keys = Object.keys(localStorage);
-    keys.forEach((key) => {
-      if (key.startsWith('moontv_cache_')) {
-        localStorage.removeItem(key);
+      const queryClient = getQueryClient();
+      void queryClient.invalidateQueries({
+        queryKey: userDataQueryKey(change.kind, change.scope),
+        exact: true,
+      });
+      if (change.kind === 'play-records') {
+        void queryClient.invalidateQueries({
+          queryKey: userQueryKeys.watchingUpdates(change.scope),
+          exact: true,
+        });
       }
+      void refreshBroadcastChange(change);
+    },
+  );
+  return channel;
+}
+
+function triggerGlobalError(message: string): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('globalError', { detail: { message } }));
+}
+
+function emitChange<T>(event: UserDataUpdateEvent, data: T): void {
+  if (typeof window === 'undefined') return;
+  const scope = getCurrentUserDataScope();
+  const change: UserDataChange = {
+    event,
+    kind: eventKind[event],
+    scope,
+    data,
+  };
+  window.dispatchEvent(new CustomEvent(USER_DATA_EVENT, { detail: change }));
+  getBroadcastChannel()?.postMessage({ ...change, data: undefined });
+}
+
+function updateQuery<T>(kind: UserDataQueryKind, data: T): void {
+  if (typeof window === 'undefined') return;
+  getBroadcastChannel();
+  const scope = getCurrentUserDataScope();
+  getQueryClient().setQueryData(userDataQueryKey(kind, scope), data);
+  if (kind === 'play-records') {
+    getQueryClient().removeQueries({
+      queryKey: userQueryKeys.watchingUpdates(scope),
+      exact: true,
     });
   }
-
-  /**
-   * 检查缓存是否有效
-   */
-  private isCacheValid<T>(
-    cache: CacheData<T>,
-    cacheType?: 'playRecords',
-  ): boolean {
-    const now = Date.now();
-    const expireTime =
-      cacheType === 'playRecords'
-        ? PLAY_RECORDS_CACHE_EXPIRE_TIME
-        : CACHE_EXPIRE_TIME;
-    return (
-      cache.version === CACHE_VERSION && now - cache.timestamp < expireTime
-    );
-  }
-
-  /**
-   * 创建缓存数据
-   */
-  private createCacheData<T>(data: T): CacheData<T> {
-    return {
-      data,
-      timestamp: Date.now(),
-      version: CACHE_VERSION,
-    };
-  }
-
-  /**
-   * 获取缓存的播放记录
-   */
-  getCachedPlayRecords(): Record<string, PlayRecord> | null {
-    const username = this.getCurrentUsername();
-    if (!username) return null;
-
-    const userCache = this.getUserCache(username);
-    const cached = userCache.playRecords;
-
-    if (cached && this.isCacheValid(cached, 'playRecords')) {
-      return cached.data;
-    }
-
-    return null;
-  }
-
-  /**
-   * 缓存播放记录
-   */
-  cachePlayRecords(data: Record<string, PlayRecord>): void {
-    const username = this.getCurrentUsername();
-    if (!username) return;
-
-    const userCache = this.getUserCache(username);
-    userCache.playRecords = this.createCacheData(data);
-    this.saveUserCache(username, userCache);
-  }
-
-  /**
-   * 获取缓存的收藏
-   */
-  getCachedFavorites(): Record<string, Favorite> | null {
-    const username = this.getCurrentUsername();
-    if (!username) return null;
-
-    const userCache = this.getUserCache(username);
-    const cached = userCache.favorites;
-
-    if (cached && this.isCacheValid(cached)) {
-      return cached.data;
-    }
-
-    return null;
-  }
-
-  /**
-   * 缓存收藏
-   */
-  cacheFavorites(data: Record<string, Favorite>): void {
-    const username = this.getCurrentUsername();
-    if (!username) return;
-
-    const userCache = this.getUserCache(username);
-    userCache.favorites = this.createCacheData(data);
-    this.saveUserCache(username, userCache);
-  }
-
-  /**
-   * 获取缓存的搜索历史
-   */
-  getCachedSearchHistory(): string[] | null {
-    const username = this.getCurrentUsername();
-    if (!username) return null;
-
-    const userCache = this.getUserCache(username);
-    const cached = userCache.searchHistory;
-
-    if (cached && this.isCacheValid(cached)) {
-      return cached.data;
-    }
-
-    return null;
-  }
-
-  /**
-   * 缓存搜索历史
-   */
-  cacheSearchHistory(data: string[]): void {
-    const username = this.getCurrentUsername();
-    if (!username) return;
-
-    const userCache = this.getUserCache(username);
-    userCache.searchHistory = this.createCacheData(data);
-    this.saveUserCache(username, userCache);
-  }
-
-  /**
-   * 获取缓存的跳过片头片尾配置
-   */
-  getCachedSkipConfigs(): Record<string, EpisodeSkipConfig> | null {
-    const username = this.getCurrentUsername();
-    if (!username) return null;
-
-    const userCache = this.getUserCache(username);
-    const cached = userCache.skipConfigs;
-
-    if (cached && this.isCacheValid(cached)) {
-      return cached.data;
-    }
-
-    return null;
-  }
-
-  /**
-   * 缓存跳过片头片尾配置
-   */
-  cacheSkipConfigs(data: Record<string, EpisodeSkipConfig>): void {
-    const username = this.getCurrentUsername();
-    if (!username) return;
-
-    const userCache = this.getUserCache(username);
-    userCache.skipConfigs = this.createCacheData(data);
-    this.saveUserCache(username, userCache);
-  }
-
-  /**
-   * 获取缓存的用户统计数据
-   */
-  getCachedUserStats(): UserStats | null {
-    const username = this.getCurrentUsername();
-    if (!username) return null;
-
-    const userCache = this.getUserCache(username);
-    const cached = userCache.userStats;
-
-    if (cached && this.isCacheValid(cached)) {
-      return cached.data;
-    }
-
-    return null;
-  }
-
-  /**
-   * 清除指定用户的所有缓存
-   */
-  clearUserCache(username?: string): void {
-    const targetUsername = username || this.getCurrentUsername();
-    if (!targetUsername) return;
-
-    try {
-      const cacheKey = this.getUserCacheKey(targetUsername);
-      localStorage.removeItem(cacheKey);
-    } catch (error) {
-      console.warn('清除用户缓存失败:', error);
-    }
-  }
-
-  /**
-   * 强制刷新播放记录缓存
-   * 用于新集数检测时确保数据同步
-   * @param immediate 是否立即清除缓存（而不是仅标记过期）
-   */
-  forceRefreshPlayRecordsCache(immediate = false): void {
-    const username = this.getCurrentUsername();
-    if (!username) return;
-
-    const userCache = this.getUserCache(username);
-    if (userCache.playRecords) {
-      if (immediate) {
-        // 🔧 优化：立即清除缓存，而不是仅标记过期
-        delete userCache.playRecords;
-        console.log('✅ 立即清除播放记录缓存');
-      } else {
-        // 将播放记录缓存时间戳设置为过期
-        userCache.playRecords.timestamp = 0;
-        console.log('✅ 标记播放记录缓存为过期');
-      }
-      this.saveUserCache(username, userCache);
-    }
-  }
-
-  /**
-   * 清除所有过期缓存
-   */
-  clearExpiredCaches(): void {
-    if (typeof window === 'undefined') return;
-
-    try {
-      const keysToRemove: string[] = [];
-
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key?.startsWith(CACHE_PREFIX)) {
-          try {
-            const cache = JSON.parse(localStorage.getItem(key) || '{}');
-            // 检查是否有任何缓存数据过期
-            let hasValidData = false;
-            for (const [, cacheData] of Object.entries(cache)) {
-              if (cacheData && this.isCacheValid(cacheData as CacheData<any>)) {
-                hasValidData = true;
-                break;
-              }
-            }
-            if (!hasValidData) {
-              keysToRemove.push(key);
-            }
-          } catch {
-            // 解析失败的缓存也删除
-            keysToRemove.push(key);
-          }
-        }
-      }
-
-      keysToRemove.forEach((key) => localStorage.removeItem(key));
-    } catch (error) {
-      console.warn('清除过期缓存失败:', error);
-    }
-  }
 }
 
-// 获取缓存管理器实例
-const cacheManager = HybridCacheManager.getInstance();
-
-// ---- 错误处理辅助函数 ----
-/**
- * 数据库操作失败时的通用错误处理
- * 立即从数据库刷新对应类型的缓存以保持数据一致性
- */
-async function handleDatabaseOperationFailure(
-  dataType: 'playRecords' | 'favorites' | 'searchHistory',
-  error: any,
-): Promise<void> {
-  console.error(`数据库操作失败 (${dataType}):`, error);
+async function refreshBroadcastChange(change: UserDataChange): Promise<void> {
   try {
-    let freshData: any;
-    let eventName: string;
-
-    switch (dataType) {
-      case 'playRecords':
-        freshData =
-          await fetchFromApi<Record<string, PlayRecord>>(`/api/playrecords`);
-        cacheManager.cachePlayRecords(freshData);
-        eventName = 'playRecordsUpdated';
+    let data: unknown;
+    switch (change.kind) {
+      case 'play-records':
+        data = await userDataRepository.getPlayRecords();
         break;
       case 'favorites':
-        freshData =
-          await fetchFromApi<Record<string, Favorite>>(`/api/favorites`);
-        cacheManager.cacheFavorites(freshData);
-        eventName = 'favoritesUpdated';
+        data = await userDataRepository.getFavorites();
         break;
-      case 'searchHistory':
-        freshData = await fetchFromApi<string[]>(`/api/searchhistory`);
-        cacheManager.cacheSearchHistory(freshData);
-        eventName = 'searchHistoryUpdated';
+      case 'search-history':
+        data = await userDataRepository.getSearchHistory();
         break;
+      case 'skip-configs':
+        data = await userDataRepository.getSkipConfigs();
+        break;
+      case 'watching-updates':
+        return;
     }
-
-    // 触发更新事件通知组件
     window.dispatchEvent(
-      new CustomEvent(eventName, {
-        detail: freshData,
+      new CustomEvent(USER_DATA_EVENT, {
+        detail: { ...change, data } satisfies UserDataChange,
       }),
     );
-  } catch (refreshErr) {
-    console.error(`刷新${dataType}缓存失败:`, refreshErr);
-    triggerGlobalError(`刷新${dataType}缓存失败`);
+  } catch {
+    // The query remains invalidated and will retry through its normal consumer.
   }
 }
 
-// ---- 工具函数 ----
-/**
- * 创建带超时的 fetch 请求
- */
-function fetchWithTimeout(
-  url: string,
-  options: RequestInit = {},
-  timeout = 30000, // 默认30秒超时（优化收藏同步性能）
-): Promise<Response> {
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      controller.abort();
-      reject(new Error(`请求超时: ${url} (${timeout}ms)`));
-    }, timeout);
+function readLocal<T>(key: string, fallback: T): T {
+  if (typeof window === 'undefined') return fallback;
+  const raw = localStorage.getItem(key);
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    triggerGlobalError('本地用户数据格式无效');
+    return fallback;
+  }
+}
 
-    fetch(url, {
-      ...options,
-      signal: controller.signal,
-    })
-      .then((response) => {
-        clearTimeout(timeoutId);
-        resolve(response);
-      })
-      .catch((error) => {
-        clearTimeout(timeoutId);
-        if (error.name === 'AbortError') {
-          reject(new Error(`请求超时: ${url} (${timeout}ms)`));
-        } else {
-          reject(error);
-        }
-      });
+function writeLocal<T>(key: string, value: T): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(url, {
+    ...init,
+    cache: 'no-store',
+    credentials: 'same-origin',
+    headers: {
+      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      ...init.headers,
+    },
   });
-}
-
-/**
- * 通用的 fetch 函数，处理 401 状态码自动跳转登录
- */
-async function fetchWithAuth(
-  url: string,
-  options?: RequestInit,
-): Promise<Response> {
-  const res = await fetchWithTimeout(url, options);
-  if (!res.ok) {
-    // 如果是 401 未授权，跳转到登录页面
-    if (res.status === 401) {
-      // 调用 logout 接口
-      try {
-        await fetch('/api/logout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        });
-      } catch (error) {
-        console.error('注销请求失败:', error);
-      }
-      const currentUrl = window.location.pathname + window.location.search;
-      const loginUrl = new URL('/login', window.location.origin);
-      loginUrl.searchParams.set('redirect', currentUrl);
-      window.location.href = loginUrl.toString();
-      throw new Error('用户未授权，已跳转到登录页面');
-    }
-    throw new Error(`请求 ${url} 失败: ${res.status}`);
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+    throw new Error(body?.error || `用户数据请求失败 (${response.status})`);
   }
-  return res;
+  return response.json() as Promise<T>;
 }
 
-/**
- * 带重试的 API 请求函数
- */
-async function fetchFromApi<T>(path: string, retries = 2): Promise<T> {
-  let lastError: Error | null = null;
-
-  for (let i = 0; i <= retries; i++) {
-    try {
-      const res = await fetchWithAuth(path);
-      return (await res.json()) as T;
-    } catch (error) {
-      lastError = error as Error;
-      console.warn(`请求失败 (尝试 ${i + 1}/${retries + 1}):`, error);
-
-      // 如果不是最后一次尝试，等待后重试
-      if (i < retries) {
-        // 使用指数退避：第一次重试等待500ms，第二次等待1000ms
-        const delay = 500 * Math.pow(2, i);
-        console.log(`等待 ${delay}ms 后重试...`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-  }
-
-  // 所有重试都失败，抛出最后一个错误
-  throw lastError || new Error('请求失败');
+function isLocalStorageMode(): boolean {
+  return getUserDataStorageType() === 'localstorage';
 }
 
-/**
- * 生成存储key
- */
 export function generateStorageKey(source: string, id: string): string {
   return `${source}+${id}`;
 }
 
-/**
- * 检查是否应该更新原始集数
- *
- * 设计思路：original_episodes 记录的是"用户上次知道的总集数"
- * 当用户观看了超出原始集数的新集数后，说明用户已经"消费"了这次更新提醒
- * 此时应该更新 original_episodes，这样下次更新才能准确计算新增集数
- *
- * 更新条件（简化版，只需满足以下条件）：
- * 1. 用户观看了超过原始集数的集数（说明看了新更新的内容）
- * 2. 用户观看进度有实质性进展（防止误触）
- *
- * 关键修复：移除了对 newRecord.total_episodes 的依赖，因为前端传入的 total_episodes
- * 可能不是最新的。只要用户看了超过原始集数的集数，就说明用户已经知道了新集数的存在，
- * 应该从数据库/API获取最新的 total_episodes 并更新 original_episodes
- *
- * 例子：
- * - 第一次看到第6集 → original_episodes = 6
- * - 更新到第8集 → 提醒"2集新增"
- * - 用户看第7集 → original_episodes 更新为 8（用户已消费这次更新）
- * - 下次更新到第10集 → 提醒"2集新增"（10-8），而不是"4集新增"（10-6）
- */
-async function checkShouldUpdateOriginalEpisodes(
-  existingRecord: PlayRecord,
-  newRecord: PlayRecord,
-  recordKey: string,
-  skipFetch = false,
-): Promise<{ shouldUpdate: boolean; latestTotalEpisodes: number }> {
-  // 🔧 优化：默认使用缓存数据，除非明确要求从数据库读取（skipFetch = false）
-  let originalEpisodes =
-    existingRecord.original_episodes || existingRecord.total_episodes;
-  let freshRecord = existingRecord;
-
-  // 🔧 优化：只在必要时才从数据库读取（例如用户切换集数时）
-  if (!skipFetch) {
-    try {
-      console.log(`🔍 从数据库读取最新的 original_episodes (${recordKey})...`);
-      const freshRecordsResponse = await fetch('/api/playrecords');
-      if (freshRecordsResponse.ok) {
-        const freshRecords = await freshRecordsResponse.json();
-
-        // 🔑 关键修复：直接用 recordKey 匹配，确保是同一个 source+id
-        if (freshRecords[recordKey]) {
-          freshRecord = freshRecords[recordKey];
-          originalEpisodes =
-            freshRecord.original_episodes || freshRecord.total_episodes;
-
-          // 🔧 自动修复：如果 original_episodes 大于当前 total_episodes，说明之前存错了
-          if (originalEpisodes > freshRecord.total_episodes) {
-            console.warn(
-              `⚠️ 检测到错误数据：original_episodes(${originalEpisodes}) > total_episodes(${freshRecord.total_episodes})，自动修正为 ${freshRecord.total_episodes}`,
-            );
-            originalEpisodes = freshRecord.total_episodes;
-            freshRecord.original_episodes = freshRecord.total_episodes;
-          }
-
-          console.log(
-            `📚 从数据库读取到最新 original_episodes: ${existingRecord.title} (${recordKey}) = ${originalEpisodes}集`,
-          );
-        } else {
-          console.warn(`⚠️ 数据库中未找到记录: ${recordKey}`);
-        }
-      }
-    } catch (error) {
-      console.warn('⚠️ 从数据库读取 original_episodes 失败，使用缓存值', error);
-    }
+export class UserDataRepository {
+  async getPlayRecords(): Promise<Record<string, PlayRecord>> {
+    const records = isLocalStorageMode()
+      ? readLocal<Record<string, PlayRecord>>(STORAGE_KEYS.playRecords, {})
+      : await requestJson<Record<string, PlayRecord>>('/api/playrecords');
+    updateQuery('play-records', records);
+    return records;
   }
 
-  // 条件1：用户观看进度超过了原始集数（说明用户已经看了新更新的集数）
-  const hasWatchedBeyondOriginal = newRecord.index > originalEpisodes;
-
-  // 条件2：用户观看进度有实质性进展（不是刚点进去就退出）
-  const hasSignificantProgress = newRecord.play_time > 60; // 观看超过1分钟
-
-  if (!hasWatchedBeyondOriginal || !hasSignificantProgress) {
-    console.log(
-      `✗ 不更新原始集数: ${existingRecord.title} - 观看第${newRecord.index}集，原始${originalEpisodes}集 (${hasWatchedBeyondOriginal ? '观看时间不足' : '未超过原始集数'})`,
-    );
-    return {
-      shouldUpdate: false,
-      latestTotalEpisodes: newRecord.total_episodes,
-    };
-  }
-
-  // 用户看了超过原始集数的集数，获取最新的 total_episodes
-  console.log(
-    `🔍 用户看了第${newRecord.index}集（超过原始${originalEpisodes}集），从数据库获取最新集数...`,
-  );
-
-  try {
-    const latestTotalEpisodes = Math.max(
-      freshRecord.total_episodes,
-      originalEpisodes,
-    );
-    console.log(
-      `✓ 应更新原始集数: ${existingRecord.title} - 用户看了第${newRecord.index}集（超过原始${originalEpisodes}集），数据库最新集数${freshRecord.total_episodes}集 → 更新原始集数为${latestTotalEpisodes}集`,
-    );
-
-    return { shouldUpdate: true, latestTotalEpisodes };
-  } catch (error) {
-    console.error('❌ 获取最新集数失败:', error);
-    // 失败时仍然更新，使用保守的值
-    return {
-      shouldUpdate: true,
-      latestTotalEpisodes: Math.max(newRecord.total_episodes, originalEpisodes),
-    };
-  }
-}
-
-// ---- API ----
-/**
- * 读取全部播放记录。
- * 非本地存储模式下使用混合缓存策略：优先返回缓存数据，后台异步同步最新数据。
- * 在服务端渲染阶段 (window === undefined) 时返回空对象，避免报错。
- * @param forceRefresh 是否强制从服务器获取最新数据（跳过缓存）
- */
-export async function getAllPlayRecords(
-  forceRefresh = false,
-): Promise<Record<string, PlayRecord>> {
-  // 服务器端渲染阶段直接返回空，交由客户端 useEffect 再行请求
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
-  // 数据库存储模式：使用混合缓存策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 🔧 优化：如果强制刷新，跳过缓存直接获取最新数据
-    if (forceRefresh) {
-      try {
-        console.log('🔄 强制刷新播放记录，跳过缓存直接从API获取');
-        const freshData =
-          await fetchFromApi<Record<string, PlayRecord>>(`/api/playrecords`);
-        cacheManager.cachePlayRecords(freshData);
-        // 触发数据更新事件
-        window.dispatchEvent(
-          new CustomEvent('playRecordsUpdated', {
-            detail: freshData,
-          }),
+  async savePlayRecord(
+    source: string,
+    id: string,
+    input: PlayRecord,
+  ): Promise<void> {
+    const key = generateStorageKey(source, id);
+    const scope = getCurrentUserDataScope();
+    const queryClient = getQueryClient();
+    const localStorageMode = isLocalStorageMode();
+    const knownRecords = localStorageMode
+      ? readLocal<Record<string, PlayRecord>>(STORAGE_KEYS.playRecords, {})
+      : queryClient.getQueryData<Record<string, PlayRecord>>(
+          userQueryKeys.playRecords(scope),
         );
-        return freshData;
-      } catch (err) {
-        console.error('强制刷新播放记录失败:', err);
-        triggerGlobalError('获取播放记录失败');
-        // 失败时尝试返回缓存数据作为降级
-        const cachedData = cacheManager.getCachedPlayRecords();
-        return cachedData || {};
-      }
+    const existing = knownRecords?.[key];
+    const record: PlayRecord = { ...input };
+    const originalEpisodes =
+      record.original_episodes ||
+      existing?.original_episodes ||
+      existing?.total_episodes ||
+      record.total_episodes;
+    record.original_episodes =
+      record.index > originalEpisodes && record.play_time > 60
+        ? Math.max(record.total_episodes, existing?.total_episodes || 0)
+        : originalEpisodes;
+
+    if (localStorageMode) {
+      const records = knownRecords || {};
+      const next = { ...records, [key]: record };
+      writeLocal(STORAGE_KEYS.playRecords, next);
+      updateQuery('play-records', next);
+      emitChange('playRecordsUpdated', next);
+      return;
     }
 
-    // 优先从缓存获取数据
-    const cachedData = cacheManager.getCachedPlayRecords();
-
-    if (cachedData) {
-      return cachedData;
+    const result = await requestJson<{ record: PlayRecord }>(
+      '/api/playrecords',
+      {
+        method: 'POST',
+        body: JSON.stringify({ key, record }),
+      },
+    );
+    const current =
+      queryClient.getQueryData<Record<string, PlayRecord>>(
+        userQueryKeys.playRecords(scope),
+      ) || knownRecords;
+    if (current) {
+      const next = { ...current, [key]: result.record };
+      updateQuery('play-records', next);
+      emitChange('playRecordsUpdated', next);
     } else {
-      // 缓存为空，直接从 API 获取并缓存（带重试）
-      try {
-        console.log('📥 缓存为空，从API获取播放记录（带重试机制）');
-        const freshData = await fetchFromApi<Record<string, PlayRecord>>(
-          `/api/playrecords`,
-          2, // 最多重试2次
-        );
-        cacheManager.cachePlayRecords(freshData);
-        console.log('✓ 成功获取并缓存播放记录');
-        return freshData;
-      } catch (err) {
-        console.error('❌ 获取播放记录失败（所有重试均失败）:', err);
-        const errorMessage =
-          err instanceof Error ? err.message : '获取播放记录失败';
-
-        // 如果是超时错误，提供更友好的提示
-        if (errorMessage.includes('超时')) {
-          triggerGlobalError('网络连接超时，请检查网络或稍后重试');
-        } else {
-          triggerGlobalError('获取播放记录失败，请稍后重试');
-        }
-
-        // 返回空对象作为降级方案
-        return {};
-      }
+      const refreshed = await this.getPlayRecords();
+      emitChange('playRecordsUpdated', refreshed);
     }
   }
 
-  // localstorage 模式
-  try {
-    const raw = localStorage.getItem(PLAY_RECORDS_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as Record<string, PlayRecord>;
-  } catch (err) {
-    console.error('读取播放记录失败:', err);
-    triggerGlobalError('读取播放记录失败');
-    return {};
+  async deletePlayRecord(source: string, id: string): Promise<PlayRecord> {
+    const key = generateStorageKey(source, id);
+    const scope = getCurrentUserDataScope();
+    const queryClient = getQueryClient();
+    const localStorageMode = isLocalStorageMode();
+    let records = localStorageMode
+      ? readLocal<Record<string, PlayRecord>>(STORAGE_KEYS.playRecords, {})
+      : queryClient.getQueryData<Record<string, PlayRecord>>(
+          userQueryKeys.playRecords(scope),
+        );
+    let deleted = records?.[key];
+
+    if (localStorageMode) {
+      const next = { ...(records || {}) };
+      delete next[key];
+      writeLocal(STORAGE_KEYS.playRecords, next);
+      updateQuery('play-records', next);
+      emitChange('playRecordsUpdated', next);
+    } else {
+      const result = await requestJson<{ record: PlayRecord | null }>(
+        `/api/playrecords?key=${encodeURIComponent(key)}`,
+        { method: 'DELETE' },
+      );
+      deleted = result.record || deleted;
+      if (records) {
+        records = { ...records };
+        delete records[key];
+        updateQuery('play-records', records);
+        emitChange('playRecordsUpdated', records);
+      } else {
+        records = await this.getPlayRecords();
+        emitChange('playRecordsUpdated', records);
+      }
+    }
+
+    if (!deleted) throw new Error('播放记录不存在');
+    return deleted;
+  }
+
+  async clearPlayRecords(): Promise<void> {
+    if (isLocalStorageMode()) localStorage.removeItem(STORAGE_KEYS.playRecords);
+    else await requestJson('/api/playrecords', { method: 'DELETE' });
+    updateQuery('play-records', {});
+    emitChange('playRecordsUpdated', {});
+  }
+
+  async getFavorites(): Promise<Record<string, Favorite>> {
+    const favorites = isLocalStorageMode()
+      ? readLocal<Record<string, Favorite>>(STORAGE_KEYS.favorites, {})
+      : await requestJson<Record<string, Favorite>>('/api/favorites');
+    updateQuery('favorites', favorites);
+    return favorites;
+  }
+
+  async saveFavorite(
+    source: string,
+    id: string,
+    favorite: Favorite,
+  ): Promise<void> {
+    const key = generateStorageKey(source, id);
+    let favorites: Record<string, Favorite>;
+    if (isLocalStorageMode()) {
+      favorites = readLocal<Record<string, Favorite>>(
+        STORAGE_KEYS.favorites,
+        {},
+      );
+      favorites = { ...favorites, [key]: favorite };
+      writeLocal(STORAGE_KEYS.favorites, favorites);
+    } else {
+      const result = await requestJson<{ favorites: Record<string, Favorite> }>(
+        '/api/favorites',
+        {
+          method: 'POST',
+          body: JSON.stringify({ key, favorite }),
+        },
+      );
+      favorites = result.favorites;
+    }
+    updateQuery('favorites', favorites);
+    emitChange('favoritesUpdated', favorites);
+  }
+
+  async deleteFavorite(source: string, id: string): Promise<void> {
+    const key = generateStorageKey(source, id);
+    let favorites: Record<string, Favorite>;
+    if (isLocalStorageMode()) {
+      favorites = readLocal<Record<string, Favorite>>(
+        STORAGE_KEYS.favorites,
+        {},
+      );
+      favorites = { ...favorites };
+      delete favorites[key];
+      writeLocal(STORAGE_KEYS.favorites, favorites);
+    } else {
+      const result = await requestJson<{ favorites: Record<string, Favorite> }>(
+        `/api/favorites?key=${encodeURIComponent(key)}`,
+        { method: 'DELETE' },
+      );
+      favorites = result.favorites;
+    }
+    updateQuery('favorites', favorites);
+    emitChange('favoritesUpdated', favorites);
+  }
+
+  async clearFavorites(): Promise<void> {
+    if (isLocalStorageMode()) localStorage.removeItem(STORAGE_KEYS.favorites);
+    else await requestJson('/api/favorites', { method: 'DELETE' });
+    updateQuery('favorites', {});
+    emitChange('favoritesUpdated', {});
+  }
+
+  async getSearchHistory(): Promise<string[]> {
+    const history = isLocalStorageMode()
+      ? readLocal<string[]>(STORAGE_KEYS.searchHistory, [])
+      : await requestJson<string[]>('/api/searchhistory');
+    updateQuery('search-history', history);
+    return history;
+  }
+
+  async addSearchHistory(keyword: string): Promise<void> {
+    const value = keyword.trim();
+    if (!value) return;
+    let history: string[];
+    if (isLocalStorageMode()) {
+      const current = readLocal<string[]>(STORAGE_KEYS.searchHistory, []);
+      history = [value, ...current.filter((item) => item !== value)].slice(
+        0,
+        SEARCH_HISTORY_LIMIT,
+      );
+      writeLocal(STORAGE_KEYS.searchHistory, history);
+    } else {
+      history = await requestJson<string[]>('/api/searchhistory', {
+        method: 'POST',
+        body: JSON.stringify({ keyword: value }),
+      });
+    }
+    updateQuery('search-history', history);
+    emitChange('searchHistoryUpdated', history);
+  }
+
+  async deleteSearchHistory(keyword?: string): Promise<void> {
+    let history: string[];
+    if (isLocalStorageMode()) {
+      const current = readLocal<string[]>(STORAGE_KEYS.searchHistory, []);
+      history = keyword ? current.filter((item) => item !== keyword) : [];
+      writeLocal(STORAGE_KEYS.searchHistory, history);
+    } else {
+      const query = keyword ? `?keyword=${encodeURIComponent(keyword)}` : '';
+      const result = await requestJson<{ history: string[] }>(
+        `/api/searchhistory${query}`,
+        { method: 'DELETE' },
+      );
+      history = result.history;
+    }
+    updateQuery('search-history', history);
+    emitChange('searchHistoryUpdated', history);
+  }
+
+  async getSkipConfig(
+    source: string,
+    id: string,
+  ): Promise<EpisodeSkipConfig | null> {
+    const key = generateStorageKey(source, id);
+    if (isLocalStorageMode()) {
+      return (
+        readLocal<Record<string, EpisodeSkipConfig>>(
+          STORAGE_KEYS.skipConfigs,
+          {},
+        )[key] || null
+      );
+    }
+    const result = await requestJson<{ config: EpisodeSkipConfig | null }>(
+      '/api/skipconfigs',
+      { method: 'POST', body: JSON.stringify({ action: 'get', key }) },
+    );
+    return result.config;
+  }
+
+  async getSkipConfigs(): Promise<Record<string, EpisodeSkipConfig>> {
+    const configs = isLocalStorageMode()
+      ? readLocal<Record<string, EpisodeSkipConfig>>(
+          STORAGE_KEYS.skipConfigs,
+          {},
+        )
+      : (
+          await requestJson<{
+            configs: Record<string, EpisodeSkipConfig>;
+          }>('/api/skipconfigs', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'getAll' }),
+          })
+        ).configs;
+    updateQuery('skip-configs', configs);
+    return configs;
+  }
+
+  async saveSkipConfig(
+    source: string,
+    id: string,
+    config: EpisodeSkipConfig,
+  ): Promise<void> {
+    const key = generateStorageKey(source, id);
+    let configs: Record<string, EpisodeSkipConfig>;
+    if (isLocalStorageMode()) {
+      configs = readLocal<Record<string, EpisodeSkipConfig>>(
+        STORAGE_KEYS.skipConfigs,
+        {},
+      );
+      configs = { ...configs, [key]: config };
+      writeLocal(STORAGE_KEYS.skipConfigs, configs);
+    } else {
+      const result = await requestJson<{
+        configs: Record<string, EpisodeSkipConfig>;
+      }>('/api/skipconfigs', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'set', key, config }),
+      });
+      configs = result.configs;
+    }
+    updateQuery('skip-configs', configs);
+    emitChange('skipConfigsUpdated', configs);
+  }
+
+  async deleteSkipConfig(source: string, id: string): Promise<void> {
+    const key = generateStorageKey(source, id);
+    let configs: Record<string, EpisodeSkipConfig>;
+    if (isLocalStorageMode()) {
+      configs = readLocal<Record<string, EpisodeSkipConfig>>(
+        STORAGE_KEYS.skipConfigs,
+        {},
+      );
+      configs = { ...configs };
+      delete configs[key];
+      writeLocal(STORAGE_KEYS.skipConfigs, configs);
+    } else {
+      const result = await requestJson<{
+        configs: Record<string, EpisodeSkipConfig>;
+      }>('/api/skipconfigs', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'delete', key }),
+      });
+      configs = result.configs;
+    }
+    updateQuery('skip-configs', configs);
+    emitChange('skipConfigsUpdated', configs);
   }
 }
 
-/**
- * 保存播放记录。
- * 数据库存储模式下使用乐观更新：先更新缓存（立即生效），再异步同步到数据库。
- */
+export const userDataRepository = new UserDataRepository();
+
+export async function getAllPlayRecords(
+  _forceRefresh = false,
+): Promise<Record<string, PlayRecord>> {
+  return userDataRepository.getPlayRecords();
+}
+
 export async function savePlayRecord(
   source: string,
   id: string,
   record: PlayRecord,
 ): Promise<void> {
-  const key = generateStorageKey(source, id);
-
-  // 🔧 优化：优先使用缓存数据，避免每次保存都请求服务器
-  // 只在缓存为空时才从服务器获取
-  let existingRecords = cacheManager.getCachedPlayRecords();
-  if (!existingRecords || Object.keys(existingRecords).length === 0) {
-    existingRecords = await getAllPlayRecords();
-  }
-  const existingRecord = existingRecords[key];
-
-  // 🔑 关键修复：确保 original_episodes 一定有值，否则新集数检测永远失效
-  // 优先级：传入值 > 现有记录值 > 当前 total_episodes
-  if (!record.original_episodes || record.original_episodes <= 0) {
-    if (
-      existingRecord?.original_episodes &&
-      existingRecord.original_episodes > 0
-    ) {
-      // 使用现有记录的 original_episodes
-      record.original_episodes = existingRecord.original_episodes;
-      console.log(
-        `✓ 使用现有原始集数: ${key} = ${existingRecord.original_episodes}集`,
-      );
-    } else {
-      // 首次保存或旧数据补充：使用当前 total_episodes
-      record.original_episodes = record.total_episodes;
-      console.log(
-        `✓ 设置原始集数: ${key} = ${record.total_episodes}集 ${existingRecord ? '(补充旧数据)' : '(首次保存)'}`,
-      );
-    }
-  }
-
-  // 检查用户是否观看了超过原始集数的新集数
-  if (
-    existingRecord?.original_episodes &&
-    existingRecord.original_episodes > 0
-  ) {
-    // 🔧 优化：在常规保存时跳过 fetch（skipFetch = true），使用缓存数据检查
-    // 这样可以避免每次保存都发送 GET 请求，大幅减少网络开销
-    const updateResult = await checkShouldUpdateOriginalEpisodes(
-      existingRecord,
-      record,
-      key,
-      true,
-    );
-    if (updateResult.shouldUpdate) {
-      record.original_episodes = updateResult.latestTotalEpisodes;
-      // 🔑 同时更新 total_episodes 为最新值
-      record.total_episodes = updateResult.latestTotalEpisodes;
-      console.log(
-        `✓ 更新原始集数: ${key} = ${existingRecord.original_episodes}集 -> ${updateResult.latestTotalEpisodes}集（用户已观看新集数）`,
-      );
-
-      // 🔑 标记需要清除缓存（在数据库更新成功后执行）
-      (record as any)._shouldClearCache = true;
-    }
-  }
-
-  // 数据库存储模式：乐观更新策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 立即更新缓存
-    const cachedRecords = cacheManager.getCachedPlayRecords() || {};
-    const updatedRecords = {
-      ...cachedRecords,
-      [key]: record,
-    };
-    cacheManager.cachePlayRecords(updatedRecords);
-
-    // 触发立即更新事件
-    window.dispatchEvent(
-      new CustomEvent('playRecordsUpdated', {
-        detail: updatedRecords,
-      }),
-    );
-
-    // 异步同步到数据库
-    try {
-      await fetchWithAuth('/api/playrecords', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ key, record }),
-      });
-
-      // 🔑 关键修复：数据库更新成功后，如果更新了 original_episodes，清除相关缓存
-      if ((record as any)._shouldClearCache) {
-        try {
-          // 🔧 优化：使用新函数清除 watching-updates 缓存
-          forceClearWatchingUpdatesCache();
-
-          // 🔑 关键：立即清除播放记录缓存，确保下次检查使用最新数据
-          cacheManager.forceRefreshPlayRecordsCache(true);
-
-          // 🔧 优化：立即获取最新数据并更新缓存，触发更新事件
-          const freshData =
-            await fetchFromApi<Record<string, PlayRecord>>(`/api/playrecords`);
-          cacheManager.cachePlayRecords(freshData);
-          window.dispatchEvent(
-            new CustomEvent('playRecordsUpdated', {
-              detail: freshData,
-            }),
-          );
-
-          console.log(
-            '✅ 数据库更新成功，已清除 watching-updates 和播放记录缓存，并刷新最新数据',
-          );
-          delete (record as any)._shouldClearCache;
-        } catch (cacheError) {
-          console.warn('清除缓存失败:', cacheError);
-        }
-      }
-    } catch (err) {
-      await handleDatabaseOperationFailure('playRecords', err);
-      throw err;
-    }
-    return;
-  }
-
-  // localstorage 模式
-  if (typeof window === 'undefined') {
-    console.warn('无法在服务端保存播放记录到 localStorage');
-    return;
-  }
-
   try {
-    const allRecords = await getAllPlayRecords();
-    allRecords[key] = record;
-    localStorage.setItem(PLAY_RECORDS_KEY, JSON.stringify(allRecords));
-    window.dispatchEvent(
-      new CustomEvent('playRecordsUpdated', {
-        detail: allRecords,
-      }),
-    );
-  } catch (err) {
-    console.error('保存播放记录失败:', err);
-    throw err;
+    await userDataRepository.savePlayRecord(source, id, record);
+  } catch (error) {
+    triggerGlobalError('保存播放记录失败');
+    throw error;
   }
 }
 
-/**
- * 删除播放记录。
- * 数据库存储模式下使用乐观更新：先更新缓存，再异步同步到数据库。
- */
-export async function deletePlayRecord(
+export function deletePlayRecord(
   source: string,
   id: string,
 ): Promise<PlayRecord> {
-  const key = generateStorageKey(source, id);
-  let record: PlayRecord;
-  // 数据库存储模式：乐观更新策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 立即更新缓存
-    const cachedRecords = cacheManager.getCachedPlayRecords() || {};
-    const updatedRecords = { ...cachedRecords };
-    record = updatedRecords[key];
-    delete updatedRecords[key];
-    cacheManager.cachePlayRecords(updatedRecords);
-
-    // 触发立即更新事件
-    window.dispatchEvent(
-      new CustomEvent('playRecordsUpdated', {
-        detail: updatedRecords,
-      }),
-    );
-
-    // 异步同步到数据库
-    try {
-      await fetchWithAuth(`/api/playrecords?key=${encodeURIComponent(key)}`, {
-        method: 'DELETE',
-      });
-    } catch (err) {
-      await handleDatabaseOperationFailure('playRecords', err);
-      triggerGlobalError('删除播放记录失败');
-      throw err;
-    }
-  }
-  return record;
+  return userDataRepository.deletePlayRecord(source, id);
 }
 
-/* ---------------- 搜索历史相关 API ---------------- */
-
-/**
- * 获取搜索历史。
- * 数据库存储模式下使用混合缓存策略：优先返回缓存数据，后台异步同步最新数据。
- */
-export async function getSearchHistory(): Promise<string[]> {
-  // 服务器端渲染阶段直接返回空
-  if (typeof window === 'undefined') {
-    return [];
-  }
-
-  // 数据库存储模式：使用混合缓存策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 优先从缓存获取数据
-    const cachedData = cacheManager.getCachedSearchHistory();
-
-    if (cachedData) {
-      // 返回缓存数据，同时后台异步更新（带节流和去重）
-      const now = Date.now();
-
-      // 如果正在同步中，直接复用当前同步任务（不需要做任何事，因为同步完成后会触发事件）
-      // 如果距离上次同步时间太短，跳过同步
-      if (
-        !pendingSearchHistorySync &&
-        now - lastSearchHistorySyncTime > SYNC_THROTTLE_TIME
-      ) {
-        pendingSearchHistorySync = fetchFromApi<string[]>(`/api/searchhistory`)
-          .then((freshData) => {
-            // 只有数据真正不同时才更新缓存
-            if (JSON.stringify(cachedData) !== JSON.stringify(freshData)) {
-              cacheManager.cacheSearchHistory(freshData);
-              // 触发数据更新事件
-              window.dispatchEvent(
-                new CustomEvent('searchHistoryUpdated', {
-                  detail: freshData,
-                }),
-              );
-            }
-            lastSearchHistorySyncTime = Date.now();
-          })
-          .catch((err) => {
-            console.warn('后台同步搜索历史失败:', err);
-            // 不显示全局错误，以免打扰用户
-          })
-          .finally(() => {
-            pendingSearchHistorySync = null;
-          });
-      }
-
-      return cachedData;
-    } else {
-      // 缓存为空，直接从 API 获取并缓存
-      try {
-        const freshData = await fetchFromApi<string[]>(`/api/searchhistory`);
-        cacheManager.cacheSearchHistory(freshData);
-        return freshData;
-      } catch (err) {
-        console.error('获取搜索历史失败:', err);
-        triggerGlobalError('获取搜索历史失败');
-        return [];
-      }
-    }
-  }
-
-  // localStorage 模式
-  try {
-    const raw = localStorage.getItem(SEARCH_HISTORY_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw) as string[];
-    // 仅返回字符串数组
-    return Array.isArray(arr) ? arr : [];
-  } catch (err) {
-    console.error('读取搜索历史失败:', err);
-    triggerGlobalError('读取搜索历史失败');
-    return [];
-  }
+export function clearAllPlayRecords(): Promise<void> {
+  return userDataRepository.clearPlayRecords();
 }
 
-/**
- * 将关键字添加到搜索历史。
- * 数据库存储模式下使用乐观更新：先更新缓存，再异步同步到数据库。
- */
-export async function addSearchHistory(keyword: string): Promise<void> {
-  const trimmed = keyword.trim();
-  if (!trimmed) return;
-
-  // 数据库存储模式：乐观更新策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 立即更新缓存
-    const cachedHistory = cacheManager.getCachedSearchHistory() || [];
-    const newHistory = [trimmed, ...cachedHistory.filter((k) => k !== trimmed)];
-    // 限制长度
-    if (newHistory.length > SEARCH_HISTORY_LIMIT) {
-      newHistory.length = SEARCH_HISTORY_LIMIT;
-    }
-    cacheManager.cacheSearchHistory(newHistory);
-
-    // 触发立即更新事件
-    window.dispatchEvent(
-      new CustomEvent('searchHistoryUpdated', {
-        detail: newHistory,
-      }),
-    );
-
-    // 异步同步到数据库
-    try {
-      await fetchWithAuth('/api/searchhistory', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ keyword: trimmed }),
-      });
-    } catch (err) {
-      await handleDatabaseOperationFailure('searchHistory', err);
-    }
-    return;
-  }
-
-  // localStorage 模式
-  if (typeof window === 'undefined') return;
-
-  try {
-    const history = await getSearchHistory();
-    const newHistory = [trimmed, ...history.filter((k) => k !== trimmed)];
-    // 限制长度
-    if (newHistory.length > SEARCH_HISTORY_LIMIT) {
-      newHistory.length = SEARCH_HISTORY_LIMIT;
-    }
-    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(newHistory));
-    window.dispatchEvent(
-      new CustomEvent('searchHistoryUpdated', {
-        detail: newHistory,
-      }),
-    );
-  } catch (err) {
-    console.error('保存搜索历史失败:', err);
-    triggerGlobalError('保存搜索历史失败');
-  }
+export function getAllFavorites(): Promise<Record<string, Favorite>> {
+  return userDataRepository.getFavorites();
 }
 
-/**
- * 清空搜索历史。
- * 数据库存储模式下使用乐观更新：先更新缓存，再异步同步到数据库。
- */
-export async function clearSearchHistory(): Promise<void> {
-  // 数据库存储模式：乐观更新策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 立即更新缓存
-    cacheManager.cacheSearchHistory([]);
-
-    // 触发立即更新事件
-    window.dispatchEvent(
-      new CustomEvent('searchHistoryUpdated', {
-        detail: [],
-      }),
-    );
-
-    // 异步同步到数据库
-    try {
-      await fetchWithAuth(`/api/searchhistory`, {
-        method: 'DELETE',
-      });
-    } catch (err) {
-      await handleDatabaseOperationFailure('searchHistory', err);
-    }
-    return;
-  }
-
-  // localStorage 模式
-  if (typeof window === 'undefined') return;
-  localStorage.removeItem(SEARCH_HISTORY_KEY);
-  window.dispatchEvent(
-    new CustomEvent('searchHistoryUpdated', {
-      detail: [],
-    }),
-  );
-}
-
-/**
- * 删除单条搜索历史。
- * 数据库存储模式下使用乐观更新：先更新缓存，再异步同步到数据库。
- */
-export async function deleteSearchHistory(keyword: string): Promise<void> {
-  const trimmed = keyword.trim();
-  if (!trimmed) return;
-
-  // 数据库存储模式：乐观更新策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 立即更新缓存
-    const cachedHistory = cacheManager.getCachedSearchHistory() || [];
-    const newHistory = cachedHistory.filter((k) => k !== trimmed);
-    cacheManager.cacheSearchHistory(newHistory);
-
-    // 触发立即更新事件
-    window.dispatchEvent(
-      new CustomEvent('searchHistoryUpdated', {
-        detail: newHistory,
-      }),
-    );
-
-    // 异步同步到数据库
-    try {
-      await fetchWithAuth(
-        `/api/searchhistory?keyword=${encodeURIComponent(trimmed)}`,
-        {
-          method: 'DELETE',
-        },
-      );
-    } catch (err) {
-      await handleDatabaseOperationFailure('searchHistory', err);
-    }
-    return;
-  }
-
-  // localStorage 模式
-  if (typeof window === 'undefined') return;
-
-  try {
-    const history = await getSearchHistory();
-    const newHistory = history.filter((k) => k !== trimmed);
-    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(newHistory));
-    window.dispatchEvent(
-      new CustomEvent('searchHistoryUpdated', {
-        detail: newHistory,
-      }),
-    );
-  } catch (err) {
-    console.error('删除搜索历史失败:', err);
-    triggerGlobalError('删除搜索历史失败');
-  }
-}
-
-// ---------------- 收藏相关 API ----------------
-
-/**
- * 获取全部收藏。
- * 数据库存储模式下使用混合缓存策略：优先返回缓存数据，后台异步同步最新数据。
- */
-export async function getAllFavorites(): Promise<Record<string, Favorite>> {
-  // 服务器端渲染阶段直接返回空
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
-  // 数据库存储模式：使用混合缓存策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 优先从缓存获取数据
-    const cachedData = cacheManager.getCachedFavorites();
-
-    // 检查是否需要发起后台同步
-    const now = Date.now();
-    const shouldSync = now - lastFavoritesSyncTime > SYNC_THROTTLE_TIME;
-
-    if (cachedData) {
-      // 1. 如果有缓存，检查是否需要后台同步
-      if (shouldSync && !pendingFavoritesRequest) {
-        pendingFavoritesRequest = fetchFromApi<Record<string, Favorite>>(
-          `/api/favorites`,
-        )
-          .then((freshData) => {
-            // 只有数据真正不同时才更新缓存
-            if (JSON.stringify(cachedData) !== JSON.stringify(freshData)) {
-              cacheManager.cacheFavorites(freshData);
-              // 触发数据更新事件
-              window.dispatchEvent(
-                new CustomEvent('favoritesUpdated', {
-                  detail: freshData,
-                }),
-              );
-            }
-            lastFavoritesSyncTime = Date.now();
-            return freshData;
-          })
-          .catch((err) => {
-            // 后台同步失败不影响用户使用，静默处理
-            console.warn(
-              '[后台同步] 收藏数据同步失败（不影响使用，已使用缓存数据）:',
-              err,
-            );
-            return cachedData;
-          })
-          .finally(() => {
-            pendingFavoritesRequest = null;
-          });
-      }
-
-      // 始终优先返回缓存数据
-      return cachedData;
-    } else {
-      // 2. 缓存为空，必须从 API 获取
-      if (pendingFavoritesRequest) {
-        // 如果已有请求在进行中，复用它
-        return pendingFavoritesRequest;
-      }
-
-      // 发起新请求
-      pendingFavoritesRequest = fetchFromApi<Record<string, Favorite>>(
-        `/api/favorites`,
-      )
-        .then((freshData) => {
-          cacheManager.cacheFavorites(freshData);
-          lastFavoritesSyncTime = Date.now();
-          return freshData;
-        })
-        .catch((err) => {
-          console.error('获取收藏失败:', err);
-          triggerGlobalError('获取收藏失败');
-          return {};
-        })
-        .finally(() => {
-          pendingFavoritesRequest = null;
-        });
-
-      return pendingFavoritesRequest;
-    }
-  }
-
-  // localStorage 模式
-  try {
-    const raw = localStorage.getItem(FAVORITES_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as Record<string, Favorite>;
-  } catch (err) {
-    console.error('读取收藏失败:', err);
-    triggerGlobalError('读取收藏失败');
-    return {};
-  }
-}
-
-/**
- * 保存收藏。
- * 数据库存储模式下使用乐观更新：先更新缓存，再异步同步到数据库。
- */
-export async function saveFavorite(
+export function saveFavorite(
   source: string,
   id: string,
   favorite: Favorite,
 ): Promise<void> {
-  const key = generateStorageKey(source, id);
-
-  // 数据库存储模式：乐观更新策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 立即更新缓存
-    const cachedFavorites = cacheManager.getCachedFavorites() || {};
-    const updatedFavorites = {
-      ...cachedFavorites,
-      [key]: favorite,
-    };
-    cacheManager.cacheFavorites(updatedFavorites);
-
-    // 触发立即更新事件
-    window.dispatchEvent(
-      new CustomEvent('favoritesUpdated', {
-        detail: updatedFavorites,
-      }),
-    );
-
-    // 异步同步到数据库
-    try {
-      await fetchWithAuth('/api/favorites', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ key, favorite }),
-      });
-    } catch (err) {
-      await handleDatabaseOperationFailure('favorites', err);
-      triggerGlobalError('保存收藏失败');
-      throw err;
-    }
-    return;
-  }
-
-  // localStorage 模式
-  if (typeof window === 'undefined') {
-    console.warn('无法在服务端保存收藏到 localStorage');
-    return;
-  }
-
-  try {
-    const allFavorites = await getAllFavorites();
-    allFavorites[key] = favorite;
-    localStorage.setItem(FAVORITES_KEY, JSON.stringify(allFavorites));
-    window.dispatchEvent(
-      new CustomEvent('favoritesUpdated', {
-        detail: allFavorites,
-      }),
-    );
-  } catch (err) {
-    console.error('保存收藏失败:', err);
-    triggerGlobalError('保存收藏失败');
-    throw err;
-  }
+  return userDataRepository.saveFavorite(source, id, favorite);
 }
 
-/**
- * 删除收藏。
- * 数据库存储模式下使用乐观更新：先更新缓存，再异步同步到数据库。
- */
-export async function deleteFavorite(
-  source: string,
-  id: string,
-): Promise<void> {
-  const key = generateStorageKey(source, id);
-
-  // 数据库存储模式：乐观更新策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 立即更新缓存
-    const cachedFavorites = cacheManager.getCachedFavorites() || {};
-    const updatedFavorites = { ...cachedFavorites };
-    delete updatedFavorites[key];
-    cacheManager.cacheFavorites(updatedFavorites);
-
-    // 触发立即更新事件
-    window.dispatchEvent(
-      new CustomEvent('favoritesUpdated', {
-        detail: updatedFavorites,
-      }),
-    );
-
-    // 异步同步到数据库
-    try {
-      await fetchWithAuth(`/api/favorites?key=${encodeURIComponent(key)}`, {
-        method: 'DELETE',
-      });
-    } catch (err) {
-      await handleDatabaseOperationFailure('favorites', err);
-      triggerGlobalError('删除收藏失败');
-      throw err;
-    }
-    return;
-  }
-
-  // localStorage 模式
-  if (typeof window === 'undefined') {
-    console.warn('无法在服务端删除收藏到 localStorage');
-    return;
-  }
-
-  try {
-    const allFavorites = await getAllFavorites();
-    delete allFavorites[key];
-    localStorage.setItem(FAVORITES_KEY, JSON.stringify(allFavorites));
-    window.dispatchEvent(
-      new CustomEvent('favoritesUpdated', {
-        detail: allFavorites,
-      }),
-    );
-  } catch (err) {
-    console.error('删除收藏失败:', err);
-    triggerGlobalError('删除收藏失败');
-    throw err;
-  }
+export function deleteFavorite(source: string, id: string): Promise<void> {
+  return userDataRepository.deleteFavorite(source, id);
 }
 
-/**
- * 判断是否已收藏。
- * 数据库存储模式下使用混合缓存策略：优先返回缓存数据，后台异步同步最新数据。
- */
 export async function isFavorited(
   source: string,
   id: string,
 ): Promise<boolean> {
-  const key = generateStorageKey(source, id);
-  const allFavorites = await getAllFavorites();
-  return !!allFavorites[key];
+  const favorites = await userDataRepository.getFavorites();
+  return Boolean(favorites[generateStorageKey(source, id)]);
 }
 
-/**
- * 清空全部播放记录
- * 数据库存储模式下使用乐观更新：先更新缓存，再异步同步到数据库。
- */
-export async function clearAllPlayRecords(): Promise<void> {
-  // 数据库存储模式：乐观更新策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 立即更新缓存
-    cacheManager.cachePlayRecords({});
-
-    // 触发立即更新事件
-    window.dispatchEvent(
-      new CustomEvent('playRecordsUpdated', {
-        detail: {},
-      }),
-    );
-
-    // 异步同步到数据库
-    try {
-      await fetchWithAuth(`/api/playrecords`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-      });
-    } catch (err) {
-      await handleDatabaseOperationFailure('playRecords', err);
-      triggerGlobalError('清空播放记录失败');
-      throw err;
-    }
-    return;
-  }
-
-  // localStorage 模式
-  if (typeof window === 'undefined') return;
-  localStorage.removeItem(PLAY_RECORDS_KEY);
-  window.dispatchEvent(
-    new CustomEvent('playRecordsUpdated', {
-      detail: {},
-    }),
-  );
+export function clearAllFavorites(): Promise<void> {
+  return userDataRepository.clearFavorites();
 }
 
-/**
- * 清空全部收藏
- * 数据库存储模式下使用乐观更新：先更新缓存，再异步同步到数据库。
- */
-export async function clearAllFavorites(): Promise<void> {
-  // 数据库存储模式：乐观更新策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 立即更新缓存
-    cacheManager.cacheFavorites({});
-
-    // 触发立即更新事件
-    window.dispatchEvent(
-      new CustomEvent('favoritesUpdated', {
-        detail: {},
-      }),
-    );
-
-    // 异步同步到数据库
-    try {
-      await fetchWithAuth(`/api/favorites`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-      });
-    } catch (err) {
-      await handleDatabaseOperationFailure('favorites', err);
-      triggerGlobalError('清空收藏失败');
-      throw err;
-    }
-    return;
-  }
-
-  // localStorage 模式
-  if (typeof window === 'undefined') return;
-  localStorage.removeItem(FAVORITES_KEY);
-  window.dispatchEvent(
-    new CustomEvent('favoritesUpdated', {
-      detail: {},
-    }),
-  );
+export function getSearchHistory(): Promise<string[]> {
+  return userDataRepository.getSearchHistory();
 }
 
-// ---------------- 混合缓存辅助函数 ----------------
-
-/**
- * 强制刷新播放记录缓存
- * 用于新集数检测时确保数据同步
- * @param immediate 是否立即清除缓存（而不是仅标记过期）
- */
-export function forceRefreshPlayRecordsCache(immediate = false): void {
-  cacheManager.forceRefreshPlayRecordsCache(immediate);
+export function addSearchHistory(keyword: string): Promise<void> {
+  return userDataRepository.addSearchHistory(keyword);
 }
 
-/**
- * 手动刷新所有缓存数据
- * 强制从服务器重新获取数据并更新缓存
- */
-export async function refreshAllCache(): Promise<void> {
-  if (STORAGE_TYPE === 'localstorage') return;
-
-  try {
-    // 并行刷新所有数据
-    const [playRecords, favorites, searchHistory, skipConfigs] =
-      await Promise.allSettled([
-        fetchFromApi<Record<string, PlayRecord>>(`/api/playrecords`),
-        fetchFromApi<Record<string, Favorite>>(`/api/favorites`),
-        fetchFromApi<string[]>(`/api/searchhistory`),
-        fetchFromApi<Record<string, EpisodeSkipConfig>>(`/api/skipconfigs`),
-      ]);
-
-    if (playRecords.status === 'fulfilled') {
-      cacheManager.cachePlayRecords(playRecords.value);
-      window.dispatchEvent(
-        new CustomEvent('playRecordsUpdated', {
-          detail: playRecords.value,
-        }),
-      );
-    }
-
-    if (favorites.status === 'fulfilled') {
-      cacheManager.cacheFavorites(favorites.value);
-      window.dispatchEvent(
-        new CustomEvent('favoritesUpdated', {
-          detail: favorites.value,
-        }),
-      );
-    }
-
-    if (searchHistory.status === 'fulfilled') {
-      cacheManager.cacheSearchHistory(searchHistory.value);
-      window.dispatchEvent(
-        new CustomEvent('searchHistoryUpdated', {
-          detail: searchHistory.value,
-        }),
-      );
-    }
-
-    if (skipConfigs.status === 'fulfilled') {
-      cacheManager.cacheSkipConfigs(skipConfigs.value);
-      window.dispatchEvent(
-        new CustomEvent('skipConfigsUpdated', {
-          detail: skipConfigs.value,
-        }),
-      );
-    }
-  } catch (err) {
-    console.error('刷新缓存失败:', err);
-    triggerGlobalError('刷新缓存失败');
-  }
+export function clearSearchHistory(): Promise<void> {
+  return userDataRepository.deleteSearchHistory();
 }
 
-// ---------------- React Hook 辅助类型 ----------------
-
-export type CacheUpdateEvent =
-  | 'playRecordsUpdated'
-  | 'favoritesUpdated'
-  | 'searchHistoryUpdated'
-  | 'skipConfigsUpdated'
-  | 'userStatsUpdated';
-
-export function subscribeToDataUpdates<T>(
-  eventType: CacheUpdateEvent,
-  callback: (data: T) => void,
-): () => void {
-  if (typeof window === 'undefined') {
-    return () => {};
-  }
-
-  const handleUpdate = (event: CustomEvent) => {
-    callback(event.detail);
-  };
-
-  window.addEventListener(eventType, handleUpdate as EventListener);
-
-  return () => {
-    window.removeEventListener(eventType, handleUpdate as EventListener);
-  };
+export function deleteSearchHistory(keyword: string): Promise<void> {
+  return userDataRepository.deleteSearchHistory(keyword);
 }
 
-// ---------------- 跳过片头片尾配置相关 API ----------------
-
-/**
- * 获取跳过片头片尾配置。
- * 数据库存储模式下使用混合缓存策略：优先返回缓存数据，后台异步同步最新数据。
- */
-export async function getSkipConfig(
+export function getSkipConfig(
   source: string,
   id: string,
 ): Promise<EpisodeSkipConfig | null> {
-  try {
-    // 服务器端渲染阶段直接返回空
-    if (typeof window === 'undefined') {
-      return null;
-    }
-
-    const key = generateStorageKey(source, id);
-
-    if (STORAGE_TYPE === 'localstorage') {
-      // localStorage 模式
-      const raw = localStorage.getItem('moontv_skip_configs');
-      if (!raw) return null;
-      const allConfigs = JSON.parse(raw) as Record<string, EpisodeSkipConfig>;
-      return allConfigs[key] || null;
-    } else {
-      // 数据库模式：先查缓存
-      const cachedConfigs = cacheManager.getCachedSkipConfigs();
-
-      if (cachedConfigs && cachedConfigs[key]) {
-        return cachedConfigs[key];
-      }
-
-      // 缓存未命中，从服务器获取
-      const authInfo = getAuthInfoFromBrowserCookie();
-      if (!authInfo?.username) {
-        return null;
-      }
-
-      const response = await fetch('/api/skipconfigs', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          action: 'get',
-          key,
-          username: authInfo.username,
-        }),
-      });
-
-      if (!response.ok) {
-        return null;
-      }
-
-      const data = await response.json();
-      const config = data.config;
-
-      // 更新缓存
-      if (config) {
-        const allConfigs = cachedConfigs || {};
-        allConfigs[key] = config;
-        cacheManager.cacheSkipConfigs(allConfigs);
-      }
-
-      return config;
-    }
-  } catch (err) {
-    console.error('获取跳过配置失败:', err);
-    return null;
-  }
+  return userDataRepository.getSkipConfig(source, id);
 }
 
-/**
- * 保存跳过片头片尾配置。
- * 数据库存储模式下使用乐观更新：先更新缓存，再异步同步到数据库。
- */
-export async function saveSkipConfig(
+export function saveSkipConfig(
   source: string,
   id: string,
   config: EpisodeSkipConfig,
 ): Promise<void> {
-  try {
-    const key = generateStorageKey(source, id);
-
-    if (STORAGE_TYPE === 'localstorage') {
-      // localStorage 模式
-      if (typeof window === 'undefined') {
-        console.warn('无法在服务端保存跳过配置到 localStorage');
-        return;
-      }
-      const raw = localStorage.getItem('moontv_skip_configs');
-      const configs = raw
-        ? (JSON.parse(raw) as Record<string, EpisodeSkipConfig>)
-        : {};
-      configs[key] = config;
-      localStorage.setItem('moontv_skip_configs', JSON.stringify(configs));
-      window.dispatchEvent(
-        new CustomEvent('skipConfigsUpdated', {
-          detail: configs,
-        }),
-      );
-    } else {
-      // 数据库模式：乐观更新策略
-      const cachedConfigs = cacheManager.getCachedSkipConfigs() || {};
-      cachedConfigs[key] = config;
-      cacheManager.cacheSkipConfigs(cachedConfigs);
-
-      window.dispatchEvent(
-        new CustomEvent('skipConfigsUpdated', {
-          detail: cachedConfigs,
-        }),
-      );
-
-      // 异步同步到数据库
-      const authInfo = getAuthInfoFromBrowserCookie();
-      if (!authInfo?.username) {
-        throw new Error('未登录');
-      }
-
-      const response = await fetch('/api/skipconfigs', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          action: 'set',
-          key,
-          config,
-          username: authInfo.username,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('保存跳过配置失败');
-      }
-    }
-  } catch (err) {
-    console.error('保存跳过配置失败:', err);
-    triggerGlobalError('保存跳过配置失败');
-    throw err;
-  }
+  return userDataRepository.saveSkipConfig(source, id, config);
 }
 
-/**
- * 获取所有跳过片头片尾配置。
- * 数据库存储模式下使用混合缓存策略：优先返回缓存数据，后台异步同步最新数据。
- */
-export async function getAllSkipConfigs(): Promise<
+export function getAllSkipConfigs(): Promise<
   Record<string, EpisodeSkipConfig>
 > {
-  // 服务器端渲染阶段直接返回空
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
-  // 数据库存储模式：使用混合缓存策略
-  if (STORAGE_TYPE !== 'localstorage') {
-    // 优先从缓存获取数据
-    const cachedData = cacheManager.getCachedSkipConfigs();
-
-    if (cachedData) {
-      // 返回缓存数据，同时后台异步更新（带节流和去重）
-      const now = Date.now();
-
-      // 如果正在同步中，直接复用当前同步任务（不需要做任何事，因为同步完成后会触发事件）
-      // 如果距离上次同步时间太短，跳过同步
-      if (
-        !pendingSkipConfigsSync &&
-        now - lastSkipConfigsSyncTime > SYNC_THROTTLE_TIME
-      ) {
-        pendingSkipConfigsSync = fetchFromApi<
-          Record<string, EpisodeSkipConfig>
-        >(`/api/skipconfigs`)
-          .then((freshData) => {
-            // 只有数据真正不同时才更新缓存
-            if (JSON.stringify(cachedData) !== JSON.stringify(freshData)) {
-              cacheManager.cacheSkipConfigs(freshData);
-              // 触发数据更新事件
-              window.dispatchEvent(
-                new CustomEvent('skipConfigsUpdated', {
-                  detail: freshData,
-                }),
-              );
-            }
-            lastSkipConfigsSyncTime = Date.now();
-          })
-          .catch((err) => {
-            console.warn('后台同步跳过片头片尾配置失败:', err);
-            // 不显示全局错误
-          })
-          .finally(() => {
-            pendingSkipConfigsSync = null;
-          });
-      }
-
-      return cachedData;
-    } else {
-      // 缓存为空，直接从 API 获取并缓存
-      try {
-        const freshData =
-          await fetchFromApi<Record<string, EpisodeSkipConfig>>(
-            `/api/skipconfigs`,
-          );
-        cacheManager.cacheSkipConfigs(freshData);
-        return freshData;
-      } catch (err) {
-        console.error('获取跳过片头片尾配置失败:', err);
-        triggerGlobalError('获取跳过片头片尾配置失败');
-        return {};
-      }
-    }
-  }
-
-  // localStorage 模式
-  try {
-    const raw = localStorage.getItem('moontv_skip_configs');
-    if (!raw) return {};
-    return JSON.parse(raw) as Record<string, EpisodeSkipConfig>;
-  } catch (err) {
-    console.error('读取跳过片头片尾配置失败:', err);
-    triggerGlobalError('读取跳过片头片尾配置失败');
-    return {};
-  }
+  return userDataRepository.getSkipConfigs();
 }
 
-/**
- * 删除跳过片头片尾配置。
- * 数据库存储模式下使用乐观更新：先更新缓存，再异步同步到数据库。
- */
-export async function deleteSkipConfig(
-  source: string,
-  id: string,
-): Promise<void> {
-  try {
-    const key = generateStorageKey(source, id);
+export function deleteSkipConfig(source: string, id: string): Promise<void> {
+  return userDataRepository.deleteSkipConfig(source, id);
+}
 
-    if (STORAGE_TYPE === 'localstorage') {
-      // localStorage 模式
-      if (typeof window === 'undefined') {
-        console.warn('无法在服务端删除跳过配置');
-        return;
-      }
-      const raw = localStorage.getItem('moontv_skip_configs');
-      if (raw) {
-        const configs = JSON.parse(raw) as Record<string, EpisodeSkipConfig>;
-        delete configs[key];
-        localStorage.setItem('moontv_skip_configs', JSON.stringify(configs));
-        window.dispatchEvent(
-          new CustomEvent('skipConfigsUpdated', {
-            detail: configs,
-          }),
-        );
-      }
-    } else {
-      // 数据库模式：乐观更新策略
-      const cachedConfigs = cacheManager.getCachedSkipConfigs() || {};
-      delete cachedConfigs[key];
-      cacheManager.cacheSkipConfigs(cachedConfigs);
-
-      window.dispatchEvent(
-        new CustomEvent('skipConfigsUpdated', {
-          detail: cachedConfigs,
-        }),
-      );
-
-      // 异步同步到数据库
-      const authInfo = getAuthInfoFromBrowserCookie();
-      if (!authInfo?.username) {
-        throw new Error('未登录');
-      }
-
-      const response = await fetch('/api/skipconfigs', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          action: 'delete',
-          key,
-          username: authInfo.username,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('删除跳过配置失败');
-      }
-    }
-  } catch (err) {
-    console.error('删除跳过片头片尾配置失败:', err);
-    triggerGlobalError('删除跳过片头片尾配置失败');
-    throw err;
-  }
+export function subscribeToDataUpdates<T>(
+  event: UserDataUpdateEvent,
+  callback: (data: T) => void,
+): () => void {
+  if (typeof window === 'undefined') return () => undefined;
+  const listener = (rawEvent: Event) => {
+    const change = (rawEvent as CustomEvent<UserDataChange>).detail;
+    if (change?.event === event) callback(change.data as T);
+  };
+  window.addEventListener(USER_DATA_EVENT, listener);
+  getBroadcastChannel();
+  return () => window.removeEventListener(USER_DATA_EVENT, listener);
 }

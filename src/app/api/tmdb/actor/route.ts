@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import '@/lib/server-cache';
 
-import { TMDB_CACHE_EXPIRE } from '@/lib/cache';
+import {
+  CACHE_POLICIES,
+  cacheService,
+  normalizeQuery,
+  noStoreResponseHeaders,
+} from '@/lib/cache-system';
 import {
   isTMDBEnabled,
   searchTMDBActorWorks,
@@ -94,14 +98,14 @@ export async function GET(request: NextRequest) {
   if (!actorName?.trim()) {
     return NextResponse.json(
       { error: '缺少必要参数: actor（演员名字）' },
-      { status: 400 },
+      { status: 400, headers: noStoreResponseHeaders() },
     );
   }
 
   if (!['tv', 'movie'].includes(type)) {
     return NextResponse.json(
       { error: 'type 参数必须是 tv 或 movie' },
-      { status: 400 },
+      { status: 400, headers: noStoreResponseHeaders() },
     );
   }
 
@@ -114,7 +118,7 @@ export async function GET(request: NextRequest) {
           error: 'TMDB演员搜索功能未启用',
           message: '请在管理后台配置TMDB API Key并启用此功能',
         },
-        { status: 503 },
+        { status: 503, headers: noStoreResponseHeaders() },
       );
     }
 
@@ -123,21 +127,28 @@ export async function GET(request: NextRequest) {
 
     // 调用TMDB演员搜索函数（不使用内部缓存）
     console.log(`[TMDB演员搜索API] 开始调用 searchTMDBActorWorks...`);
-    const result = await searchTMDBActorWorks(
-      actorName.trim(),
-      type as 'movie' | 'tv',
-      filterOptions,
+    const normalizedActorName = normalizeQuery(actorName);
+    const params = { actorName: normalizedActorName, type, filterOptions };
+    const result = await cacheService.getOrLoad(
+      CACHE_POLICIES.TMDB_ACTOR_SEARCH,
+      params,
+      async () => {
+        const value = await searchTMDBActorWorks(
+          normalizedActorName,
+          type as 'movie' | 'tv',
+          filterOptions,
+        );
+        if (value.code !== 200) throw new Error(value.message);
+        return value;
+      },
+      { isNegative: (value) => value.list.length === 0 },
     );
     console.log(`[TMDB演员搜索API] searchTMDBActorWorks 调用完成`);
 
     console.log(`[TMDB演员搜索API] 搜索结果: ${result.list?.length || 0} 项`);
 
-    // 设置合理的缓存时间
-    const cacheTime = TMDB_CACHE_EXPIRE.actor_search;
     return NextResponse.json(result, {
-      headers: {
-        'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-      },
+      headers: noStoreResponseHeaders(),
     });
   } catch (error) {
     console.error(
@@ -150,7 +161,7 @@ export async function GET(request: NextRequest) {
         details: (error as Error).message,
         params: { actorName, type, filterOptions },
       },
-      { status: 500 },
+      { status: 500, headers: noStoreResponseHeaders() },
     );
   }
 }

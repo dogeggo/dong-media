@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { getCachedLiveChannels } from '@/lib/live';
 
 export const runtime = 'nodejs';
@@ -31,11 +32,14 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    return NextResponse.json({
-      success: true,
-      data: channelsWithEpgLogos,
-    });
+    return NextResponse.json(
+      { success: true, data: channelsWithEpgLogos },
+      { headers: noStoreResponseHeaders() },
+    );
   } catch (_error) {
-    return NextResponse.json({ error: '获取频道信息失败' }, { status: 500 });
+    return NextResponse.json(
+      { error: '获取频道信息失败' },
+      { status: 500, headers: noStoreResponseHeaders() },
+    );
   }
 }

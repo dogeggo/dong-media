@@ -4,15 +4,23 @@ import { revalidatePath } from 'next/cache';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 
 export const runtime = 'nodejs';
 
+function json(body: unknown, init?: ResponseInit) {
+  return NextResponse.json(body, {
+    ...init,
+    headers: noStoreResponseHeaders(init?.headers),
+  });
+}
+
 export async function POST(request: NextRequest) {
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
   if (storageType === 'localstorage') {
-    return NextResponse.json(
+    return json(
       {
         error: '不支持本地存储进行管理员配置',
       },
@@ -25,7 +33,7 @@ export async function POST(request: NextRequest) {
 
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return json({ error: 'Unauthorized' }, { status: 401 });
     }
     const username = authInfo.username;
 
@@ -33,7 +41,6 @@ export async function POST(request: NextRequest) {
       SiteName,
       Announcement,
       SearchDownstreamMaxPage,
-      SiteInterfaceCacheTime,
       ShowAdultContent,
       FluidSearch,
       TMDBApiKey,
@@ -43,7 +50,6 @@ export async function POST(request: NextRequest) {
       SiteName: string;
       Announcement: string;
       SearchDownstreamMaxPage: number;
-      SiteInterfaceCacheTime: number;
       ShowAdultContent: boolean;
       FluidSearch: boolean;
       TMDBApiKey?: string;
@@ -56,10 +62,9 @@ export async function POST(request: NextRequest) {
       typeof SiteName !== 'string' ||
       typeof Announcement !== 'string' ||
       typeof SearchDownstreamMaxPage !== 'number' ||
-      typeof SiteInterfaceCacheTime !== 'number' ||
       typeof FluidSearch !== 'boolean'
     ) {
-      return NextResponse.json({ error: '参数格式错误' }, { status: 400 });
+      return json({ error: '参数格式错误' }, { status: 400 });
     }
 
     const adminConfig = await loadConfig();
@@ -71,7 +76,7 @@ export async function POST(request: NextRequest) {
         (u) => u.username === username,
       );
       if (!user || user.role !== 'admin' || user.banned) {
-        return NextResponse.json({ error: '权限不足' }, { status: 401 });
+        return json({ error: '权限不足' }, { status: 401 });
       }
     }
 
@@ -81,7 +86,6 @@ export async function POST(request: NextRequest) {
       SiteName,
       Announcement,
       SearchDownstreamMaxPage,
-      SiteInterfaceCacheTime,
       ShowAdultContent,
       FluidSearch,
       TMDBApiKey: TMDBApiKey || '',
@@ -95,22 +99,10 @@ export async function POST(request: NextRequest) {
     // 🔥 刷新所有页面的缓存，使新配置立即生效（无需重启Docker）
     revalidatePath('/', 'layout');
 
-    // 🔥 添加强制no-cache headers，防止Docker环境下Next.js Router Cache问题
-    // 参考：https://github.com/vercel/next.js/issues/62071
-    return NextResponse.json(
-      { ok: true, shouldReload: true }, // 添加shouldReload标志通知前端刷新页面
-      {
-        headers: {
-          'Cache-Control':
-            'no-store, no-cache, must-revalidate, proxy-revalidate',
-          Pragma: 'no-cache',
-          Expires: '0',
-        },
-      },
-    );
+    return json({ ok: true, shouldReload: true });
   } catch (error) {
     console.error('更新站点配置失败:', error);
-    return NextResponse.json(
+    return json(
       {
         error: '更新站点配置失败',
         details: (error as Error).message,

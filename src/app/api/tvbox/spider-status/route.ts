@@ -1,5 +1,8 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
+import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
+import { loadConfig } from '@/lib/config';
 import { getSpiderJar, getSpiderStatus } from '@/lib/spiderJar';
 
 export const runtime = 'nodejs';
@@ -13,8 +16,7 @@ export async function GET() {
   try {
     const currentStatus = getSpiderStatus();
 
-    // 强制刷新获取最新状态
-    const freshJar = await getSpiderJar(true);
+    const freshJar = await getSpiderJar(false);
 
     const response = {
       success: true,
@@ -53,7 +55,7 @@ export async function GET() {
       response.recommendations.push('JAR 文件较小，可能不完整，建议强制刷新');
     }
 
-    return NextResponse.json(response);
+    return NextResponse.json(response, { headers: noStoreResponseHeaders() });
   } catch (error) {
     return NextResponse.json(
       {
@@ -61,7 +63,7 @@ export async function GET() {
         error: error instanceof Error ? error.message : 'Unknown error',
         timestamp: Date.now(),
       },
-      { status: 500 },
+      { status: 500, headers: noStoreResponseHeaders() },
     );
   }
 }
@@ -69,22 +71,51 @@ export async function GET() {
 /**
  * 手动刷新 JAR 缓存
  */
-export async function POST() {
+export async function POST(request: NextRequest) {
+  const authInfo = getAuthInfoFromCookie(request);
+  if (!authInfo?.username) {
+    return NextResponse.json(
+      { error: 'Unauthorized' },
+      { status: 401, headers: noStoreResponseHeaders() },
+    );
+  }
+  if (!(await canRefreshSpider(authInfo.username))) {
+    return NextResponse.json(
+      { error: 'Forbidden' },
+      { status: 403, headers: noStoreResponseHeaders() },
+    );
+  }
+
   try {
     const refreshedJar = await getSpiderJar(true);
 
-    return NextResponse.json({
-      success: true,
-      message: 'JAR 缓存已刷新',
-      jar_status: {
-        success: refreshedJar.success,
-        source: refreshedJar.source,
-        size: refreshedJar.size,
-        md5: refreshedJar.md5,
-        tried_sources: refreshedJar.tried,
+    if (refreshedJar.cached) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'JAR 刷新失败，已保留旧缓存',
+          stalePreserved: true,
+          timestamp: Date.now(),
+        },
+        { status: 502, headers: noStoreResponseHeaders() },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        message: 'JAR 缓存已刷新',
+        jar_status: {
+          success: refreshedJar.success,
+          source: refreshedJar.source,
+          size: refreshedJar.size,
+          md5: refreshedJar.md5,
+          tried_sources: refreshedJar.tried,
+        },
+        timestamp: Date.now(),
       },
-      timestamp: Date.now(),
-    });
+      { headers: noStoreResponseHeaders() },
+    );
   } catch (error) {
     return NextResponse.json(
       {
@@ -92,7 +123,16 @@ export async function POST() {
         error: error instanceof Error ? error.message : 'Unknown error',
         timestamp: Date.now(),
       },
-      { status: 500 },
+      { status: 500, headers: noStoreResponseHeaders() },
     );
   }
+}
+
+async function canRefreshSpider(username: string): Promise<boolean> {
+  if (username === process.env.USERNAME) return true;
+  const config = await loadConfig();
+  const user = config.UserConfig.Users.find(
+    (candidate) => candidate.username === username,
+  );
+  return Boolean(user && !user.banned && user.role === 'admin');
 }

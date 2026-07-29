@@ -7,11 +7,8 @@ import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 
 import type { PlayRecord } from '@/lib/db.client';
-import {
-  clearAllPlayRecords,
-  getAllPlayRecords,
-  subscribeToDataUpdates,
-} from '@/lib/db.client';
+import { clearAllPlayRecords, getAllPlayRecords } from '@/lib/db.client';
+import { getCurrentUserDataScope, userQueryKeys } from '@/lib/user-query-keys';
 import {
   checkWatchingUpdates,
   getDetailedWatchingUpdates,
@@ -35,6 +32,8 @@ interface ContinueWatchingProps {
 
 export default function ContinueWatching({ className }: ContinueWatchingProps) {
   const queryClient = useQueryClient();
+  const userDataScope = getCurrentUserDataScope();
+  const playRecordsQueryKey = userQueryKeys.playRecords(userDataScope);
   const [watchingUpdates, setWatchingUpdates] = useState<WatchingUpdate | null>(
     null,
   );
@@ -55,12 +54,12 @@ export default function ContinueWatching({ className }: ContinueWatchingProps) {
   }, []);
 
   const { data: allPlayRecords = {}, isLoading } = useQuery({
-    queryKey: ['playRecords'],
+    queryKey: playRecordsQueryKey,
     queryFn: () => getAllPlayRecords(),
     staleTime: 5 * 60 * 1000,
     gcTime: 10 * 60 * 1000,
     placeholderData: () =>
-      queryClient.getQueryData<Record<string, PlayRecord>>(['playRecords']),
+      queryClient.getQueryData<Record<string, PlayRecord>>(playRecordsQueryKey),
   });
 
   const playRecords = useMemo<(PlayRecord & { key: string })[]>(() => {
@@ -73,17 +72,6 @@ export default function ContinueWatching({ className }: ContinueWatchingProps) {
 
     return recordsArray.sort((a, b) => b.save_time - a.save_time);
   }, [allPlayRecords]);
-
-  useEffect(() => {
-    const unsubscribe = subscribeToDataUpdates(
-      'playRecordsUpdated',
-      (newRecords: Record<string, PlayRecord>) => {
-        queryClient.setQueryData(['playRecords'], newRecords);
-      },
-    );
-
-    return unsubscribe;
-  }, [queryClient]);
 
   // 获取 watching updates 数据（仅当有播放记录时）
   useEffect(() => {
@@ -183,7 +171,7 @@ export default function ContinueWatching({ className }: ContinueWatchingProps) {
 
   const handleClearAll = async () => {
     await clearAllPlayRecords();
-    queryClient.setQueryData(['playRecords'], {});
+    queryClient.setQueryData(playRecordsQueryKey, {});
   };
 
   return (
@@ -260,7 +248,7 @@ export default function ContinueWatching({ className }: ContinueWatchingProps) {
                       from='playrecord'
                       onDelete={() =>
                         queryClient.setQueryData<Record<string, PlayRecord>>(
-                          ['playRecords'],
+                          playRecordsQueryKey,
                           (prev) => {
                             if (!prev) return prev;
                             const updated = { ...prev };

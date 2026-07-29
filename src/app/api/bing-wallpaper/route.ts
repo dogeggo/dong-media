@@ -1,61 +1,94 @@
 import { NextResponse } from 'next/server';
 
+import {
+  CACHE_POLICIES,
+  cacheService,
+  hasOnlyUniqueSearchParams,
+  noStoreResponseHeaders,
+  publicApiResponseHeaders,
+} from '@/lib/cache-system';
+
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
-  try {
-    // 随机选择壁纸来源：70% Bing, 30% Lorem Picsum
-    const useBing = Math.random() < 0.7;
+interface WallpaperMetadata {
+  url: string;
+  copyright: string;
+  title: string;
+  source: 'bing';
+}
 
-    if (useBing) {
-      // Bing 随机壁纸（从过去 0-7 天中随机选择）
-      const randomIdx = Math.floor(Math.random() * 8);
-      const response = await fetch(
-        `https://www.bing.com/HPImageArchive.aspx?format=js&idx=${randomIdx}&n=1&mkt=zh-CN`,
-        {
-          // 不缓存，每次都随机
-          cache: 'no-store',
-        },
-      );
-
-      if (!response.ok) {
-        throw new Error('Failed to fetch Bing wallpaper');
-      }
-
-      const data = await response.json();
-
-      if (data.images && data.images[0]) {
-        const imageUrl = `https://www.bing.com${data.images[0].url}`;
-
-        return NextResponse.json({
-          url: imageUrl,
-          copyright: data.images[0].copyright,
-          title: data.images[0].title,
-          source: 'bing',
-        });
-      }
-    }
-
-    // 如果 Bing 失败或选择了 Lorem Picsum
-    // Lorem Picsum 随机壁纸（高质量，1920x1080）
-    const loremUrl = `https://picsum.photos/1920/1080?random=${Date.now()}`;
-
-    return NextResponse.json({
-      url: loremUrl,
-      copyright: 'Lorem Picsum - Free random images',
-      title: 'Random Photo',
-      source: 'picsum',
-    });
-  } catch (error) {
-    console.error('Error fetching wallpaper:', error);
-
-    // 如果出错，返回 Lorem Picsum 作为备用
-    const loremUrl = `https://picsum.photos/1920/1080?random=${Date.now()}`;
-    return NextResponse.json({
-      url: loremUrl,
-      copyright: 'Lorem Picsum - Free random images',
-      title: 'Random Photo',
-      source: 'picsum',
-    });
+export async function GET(request: Request) {
+  if (!hasOnlyUniqueSearchParams(new URL(request.url).searchParams, [])) {
+    return NextResponse.json(
+      { error: '包含未知或重复参数' },
+      { status: 400, headers: noStoreResponseHeaders() },
+    );
   }
+  try {
+    const cached = await cacheService.getOrLoadResult<WallpaperMetadata | null>(
+      CACHE_POLICIES.BING_WALLPAPER_META,
+      { date: dateInShanghai(), market: 'zh-CN' },
+      fetchWallpaper,
+      { isNegative: (value) => value === null },
+    );
+    if (cached.value) {
+      return NextResponse.json(cached.value, {
+        headers: publicApiResponseHeaders(CACHE_POLICIES.BING_WALLPAPER_META, {
+          ttlSeconds: cached.ttlRemaining,
+          negative: cached.negative,
+        }),
+      });
+    }
+  } catch {
+    // A short-lived upstream failure must not become a shared HTTP response.
+  }
+
+  return NextResponse.json(fallbackWallpaper(), {
+    headers: noStoreResponseHeaders(),
+  });
+}
+
+async function fetchWallpaper(): Promise<WallpaperMetadata | null> {
+  try {
+    const index = Math.floor(Math.random() * 8);
+    const response = await fetch(
+      `https://www.bing.com/HPImageArchive.aspx?format=js&idx=${index}&n=1&mkt=zh-CN`,
+      { cache: 'no-store', signal: AbortSignal.timeout(10_000) },
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      return null;
+    }
+    const body = (await response.json()) as {
+      images?: Array<{ url?: string; copyright?: string; title?: string }>;
+    };
+    const image = body.images?.[0];
+    if (!image?.url) return null;
+    return {
+      url: new URL(image.url, 'https://www.bing.com').toString(),
+      copyright: image.copyright || '',
+      title: image.title || '',
+      source: 'bing',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function dateInShanghai(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
+function fallbackWallpaper() {
+  return {
+    url: `https://picsum.photos/1920/1080?random=${Date.now()}`,
+    copyright: 'Lorem Picsum - Free random images',
+    title: 'Random Photo',
+    source: 'picsum' as const,
+  };
 }

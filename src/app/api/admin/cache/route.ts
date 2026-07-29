@@ -1,433 +1,269 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { DatabaseCacheManager } from '@/lib/database-cache';
-import { db } from '@/lib/db';
+import {
+  ALL_CACHE_POLICIES,
+  cacheService,
+  getCachePolicy,
+  noStoreResponseHeaders,
+} from '@/lib/cache-system';
+import { imageDiskCache, videoDiskCache } from '@/lib/cache-system/media/disk';
 
 export const runtime = 'nodejs';
 
-// 缓存统计接口
-export async function GET(request: NextRequest) {
-  const authInfo = getAuthInfoFromCookie(request);
-  if (!authInfo || !authInfo.username) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+const TYPE_TO_TAG: Record<string, string> = {
+  douban: 'douban',
+  shortdrama: 'shortdrama',
+  tmdb: 'tmdb',
+  danmu: 'danmu',
+  netdisk: 'netdisk',
+  youtube: 'youtube',
+  search: 'search',
+  live: 'live',
+  media: 'media',
+  config: 'config',
+};
 
-  // 只有站长(owner)可以访问缓存管理
-  if (authInfo.username !== process.env.USERNAME) {
-    return NextResponse.json(
-      { error: 'Forbidden: Owner access required' },
-      { status: 403 },
-    );
+function json(body: unknown, init?: ResponseInit) {
+  return NextResponse.json(body, {
+    ...init,
+    headers: noStoreResponseHeaders(init?.headers),
+  });
+}
+
+function authorize(request: NextRequest): Response | null {
+  const authInfo = getAuthInfoFromCookie(request);
+  if (!authInfo?.username) {
+    return json({ error: 'Unauthorized' }, { status: 401 });
   }
+  if (authInfo.username !== process.env.USERNAME) {
+    return json({ error: 'Forbidden: Owner access required' }, { status: 403 });
+  }
+  return null;
+}
+
+export async function GET(request: NextRequest) {
+  const denied = authorize(request);
+  if (denied) return denied;
 
   try {
-    // 添加调试信息
-    console.log('🔍 开始获取缓存统计...');
-
-    // 检查存储类型
-    const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
-    console.log('🔍 存储类型:', storageType);
-
-    const stats = await getCacheStats();
-    return NextResponse.json({
-      success: true,
-      data: stats,
-      debug: {
-        storageType,
-        timestamp: new Date().toISOString(),
-      },
-    });
-  } catch (error) {
-    console.error('获取缓存统计失败:', error);
-    return NextResponse.json(
-      {
-        success: false,
-        error: '获取缓存统计失败',
-      },
-      { status: 500 },
-    );
+    const [stats, image, video] = await Promise.all([
+      cacheService.stats(),
+      imageDiskCache.stats(),
+      videoDiskCache.stats(),
+    ]);
+    return json({ success: true, data: formatStats(stats, { image, video }) });
+  } catch {
+    return json({ success: false, error: '获取缓存统计失败' }, { status: 500 });
   }
 }
 
-// 缓存清理接口
 export async function DELETE(request: NextRequest) {
-  const authInfo = getAuthInfoFromCookie(request);
-  if (!authInfo || !authInfo.username) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const denied = authorize(request);
+  if (denied) return denied;
 
-  // 只有站长(owner)可以访问缓存管理
-  if (authInfo.username !== process.env.USERNAME) {
-    return NextResponse.json(
-      { error: 'Forbidden: Owner access required' },
-      { status: 403 },
-    );
-  }
-
-  const { searchParams } = new URL(request.url);
-  const cacheType = searchParams.get('type'); // all, douban, shortdrama, danmu, netdisk, youtube, search
-
+  const type = request.nextUrl.searchParams.get('type');
   try {
-    let clearedCount = 0;
-    let message = '';
-
-    switch (cacheType) {
-      case 'douban':
-        clearedCount = await clearDoubanCache();
-        message = `已清理 ${clearedCount} 个豆瓣缓存项`;
-        break;
-
-      case 'shortdrama':
-        clearedCount = await clearShortdramaCache();
-        message = `已清理 ${clearedCount} 个短剧缓存项`;
-        break;
-
-      case 'tmdb':
-        clearedCount = await clearTmdbCache();
-        message = `已清理 ${clearedCount} 个TMDB缓存项`;
-        break;
-
-      case 'danmu':
-        clearedCount = await clearDanmuCache();
-        message = `已清理 ${clearedCount} 个弹幕缓存项`;
-        break;
-
-      case 'netdisk':
-        clearedCount = await clearNetdiskCache();
-        message = `已清理 ${clearedCount} 个网盘搜索缓存项`;
-        break;
-
-      case 'youtube':
-        clearedCount = await clearYouTubeCache();
-        message = `已清理 ${clearedCount} 个YouTube搜索缓存项`;
-        break;
-
-      case 'search':
-        clearedCount = await clearSearchCache();
-        message = `已清理 ${clearedCount} 个搜索缓存项`;
-        break;
-
-      case 'expired':
-        clearedCount = await clearExpiredCache();
-        message = `已清理 ${clearedCount} 个过期缓存项`;
-        break;
-
-      case 'all':
-        clearedCount = await clearAllCache();
-        message = `已清理 ${clearedCount} 个缓存项`;
-        break;
-
-      default:
-        return NextResponse.json(
-          {
-            success: false,
-            error: '无效的缓存类型',
-          },
-          { status: 400 },
-        );
+    if (type === 'expired') {
+      const localRemoved = cacheService.clearExpiredMemory();
+      const [image, video] = await Promise.all([
+        imageDiskCache.cleanup(),
+        videoDiskCache.cleanup(),
+      ]);
+      const clearedCount = localRemoved + image.removed + video.removed;
+      return json({
+        success: true,
+        data: {
+          clearedCount,
+          message: `已清理 ${localRemoved} 个过期 L1 条目和 ${image.removed + video.removed} 个过期/损坏媒体对象；共享缓存由 TTL 自动清理`,
+          invalidations: [],
+          media: { image, video },
+        },
+      });
     }
 
-    return NextResponse.json({
+    const policy = type ? getCachePolicy(type) : undefined;
+    const invalidations =
+      type === 'all'
+        ? await cacheService.invalidateAll()
+        : policy
+          ? [await cacheService.invalidateNamespace(policy)]
+          : type && TYPE_TO_TAG[type]
+            ? await cacheService.invalidateTag(TYPE_TO_TAG[type])
+            : null;
+
+    if (!invalidations) {
+      return json({ success: false, error: '无效的缓存类型' }, { status: 400 });
+    }
+
+    const clearedCount = invalidations.reduce(
+      (total, result) => total + result.localEntriesRemoved,
+      0,
+    );
+    const clearMedia =
+      type === 'all' ||
+      type === 'media' ||
+      invalidations.some((item) => item.namespace.startsWith('media.'));
+    const media = clearMedia
+      ? await Promise.all([imageDiskCache.clear(), videoDiskCache.clear()])
+      : [0, 0];
+    const mediaRemoved = media[0] + media[1];
+    return json({
       success: true,
       data: {
-        clearedCount,
-        message,
+        clearedCount: clearedCount + mediaRemoved,
+        message: `已切换 ${invalidations.length} 个缓存命名空间的 generation，移除 ${clearedCount} 个 L1 条目和 ${mediaRemoved} 个磁盘媒体对象`,
+        invalidations,
+        media: { image: media[0], video: media[1] },
       },
     });
-  } catch (error) {
-    console.error('清理缓存失败:', error);
-    return NextResponse.json(
-      {
-        success: false,
-        error: '清理缓存失败',
-      },
-      { status: 500 },
-    );
+  } catch {
+    return json({ success: false, error: '清理缓存失败' }, { status: 500 });
   }
 }
 
-// 获取缓存统计信息
-async function getCacheStats() {
-  console.log('📊 开始获取缓存统计信息...');
+function formatStats(
+  stats: Awaited<ReturnType<typeof cacheService.stats>>,
+  media: {
+    image: Awaited<ReturnType<typeof imageDiskCache.stats>>;
+    video: Awaited<ReturnType<typeof videoDiskCache.stats>>;
+  },
+) {
+  const l1 = stats.layers.find((layer) => layer.layer === 'L1');
+  const l2 = stats.layers.find((layer) => layer.layer === 'L2');
+  const namespaces = mergeNamespaceStats(
+    l1?.byNamespace || {},
+    l2?.byNamespace || {},
+  );
 
-  // 直接使用数据库统计（支持KVRocks/Redis）
-  const dbStats = await DatabaseCacheManager.getSimpleCacheStats();
+  const groups = Object.fromEntries(
+    [
+      'douban',
+      'shortdrama',
+      'tmdb',
+      'danmu',
+      'netdisk',
+      'youtube',
+      'search',
+    ].map((group) => [group, groupStats(group, namespaces)]),
+  ) as Record<
+    string,
+    { count: number; size: number; types: Record<string, number> }
+  >;
+  const knownNamespaces = new Set(
+    Object.keys(namespaces).filter((namespace) =>
+      Object.keys(groups).some(
+        (group) => namespace === group || namespace.startsWith(`${group}.`),
+      ),
+    ),
+  );
+  const other = Object.entries(namespaces).reduce(
+    (result, [namespace, value]) => {
+      if (!knownNamespaces.has(namespace)) {
+        result.count += value.entries;
+        result.size += value.estimatedBytes;
+      }
+      return result;
+    },
+    { count: 0, size: 0 },
+  );
+  const total = {
+    count:
+      (l1?.entries || 0) +
+      (l2?.entries || 0) +
+      media.image.entries +
+      media.video.entries,
+    size:
+      (l1?.estimatedBytes || 0) +
+      (l2?.estimatedBytes || 0) +
+      media.image.bytes +
+      media.video.bytes,
+  };
 
-  if (!dbStats) {
-    console.warn('⚠️ 数据库缓存统计失败，返回空统计');
+  const namespaceDetails = ALL_CACHE_POLICIES.map((policy) => {
+    const metric = stats.namespaces.find(
+      (item) => item.namespace === policy.namespace,
+    );
+    const l1Stats = l1?.byNamespace?.[policy.namespace];
+    const l2Stats = l2?.byNamespace?.[policy.namespace];
+    const disk =
+      policy.namespace === 'media.image'
+        ? media.image
+        : policy.namespace === 'media.video'
+          ? media.video
+          : undefined;
     return {
-      douban: { count: 0, size: 0, types: {} },
-      shortdrama: { count: 0, size: 0, types: {} },
-      tmdb: { count: 0, size: 0, types: {} },
-      danmu: { count: 0, size: 0 },
-      netdisk: { count: 0, size: 0 },
-      youtube: { count: 0, size: 0 },
-      search: { count: 0, size: 0 },
-      other: { count: 0, size: 0 },
-      total: { count: 0, size: 0 },
-      timestamp: new Date().toISOString(),
-      source: 'failed',
-      note: '数据库统计失败',
-      formattedSizes: {
-        douban: '0 B',
-        shortdrama: '0 B',
-        tmdb: '0 B',
-        danmu: '0 B',
-        netdisk: '0 B',
-        youtube: '0 B',
-        search: '0 B',
-        other: '0 B',
-        total: '0 B',
+      policy,
+      metrics: metric,
+      layers: {
+        L1: l1Stats || { entries: 0, estimatedBytes: 0 },
+        L2: l2Stats || { entries: 0, estimatedBytes: 0 },
+        ...(disk
+          ? { DISK: { entries: disk.entries, estimatedBytes: disk.bytes } }
+          : {}),
       },
     };
-  }
+  });
 
-  console.log(`✅ 缓存统计获取完成: 总计 ${dbStats.total.count} 项`);
-  return dbStats;
+  return {
+    ...groups,
+    other,
+    total,
+    timestamp: new Date().toISOString(),
+    source: 'all-layers',
+    formattedSizes: {
+      ...Object.fromEntries(
+        Object.entries(groups).map(([name, value]) => [
+          name,
+          formatBytes(value.size),
+        ]),
+      ),
+      other: formatBytes(other.size),
+      total: formatBytes(total.size),
+    },
+    namespaces: stats.namespaces,
+    layers: stats.layers,
+    policies: ALL_CACHE_POLICIES,
+    namespaceDetails,
+    media,
+  };
 }
 
-// 清理豆瓣缓存
-async function clearDoubanCache(): Promise<number> {
-  let clearedCount = 0;
-
-  // 清理数据库中的豆瓣缓存
-  const dbCleared = await DatabaseCacheManager.clearCacheByType('douban');
-  clearedCount += dbCleared;
-
-  // 清理localStorage中的豆瓣缓存（兜底）
-  if (typeof localStorage !== 'undefined') {
-    const keys = Object.keys(localStorage).filter(
-      (key) => key.startsWith('douban-') || key.startsWith('bangumi-'),
-    );
-    keys.forEach((key) => {
-      localStorage.removeItem(key);
-      clearedCount++;
-    });
-    console.log(`🗑️ localStorage中清理了 ${keys.length} 个豆瓣缓存项`);
+function mergeNamespaceStats(
+  ...layers: Array<Record<string, { entries: number; estimatedBytes: number }>>
+) {
+  const merged: Record<string, { entries: number; estimatedBytes: number }> =
+    {};
+  for (const layer of layers) {
+    for (const [namespace, value] of Object.entries(layer)) {
+      const target = (merged[namespace] ||= { entries: 0, estimatedBytes: 0 });
+      target.entries += value.entries;
+      target.estimatedBytes += value.estimatedBytes;
+    }
   }
-
-  return clearedCount;
+  return merged;
 }
 
-// 清理短剧缓存
-async function clearShortdramaCache(): Promise<number> {
-  let clearedCount = 0;
-
-  // 清理数据库中的短剧缓存
-  const dbCleared = await DatabaseCacheManager.clearCacheByType('shortdrama');
-  clearedCount += dbCleared;
-
-  // 清理localStorage中的短剧缓存（兜底）
-  if (typeof localStorage !== 'undefined') {
-    const keys = Object.keys(localStorage).filter((key) =>
-      key.startsWith('shortdrama-'),
-    );
-    keys.forEach((key) => {
-      localStorage.removeItem(key);
-      clearedCount++;
-    });
-    console.log(`🗑️ localStorage中清理了 ${keys.length} 个短剧缓存项`);
+function groupStats(
+  group: string,
+  namespaces: Record<string, { entries: number; estimatedBytes: number }>,
+) {
+  const result = { count: 0, size: 0, types: {} as Record<string, number> };
+  for (const [namespace, value] of Object.entries(namespaces)) {
+    if (namespace !== group && !namespace.startsWith(`${group}.`)) continue;
+    result.count += value.entries;
+    result.size += value.estimatedBytes;
+    result.types[namespace.slice(group.length + 1) || group] = value.entries;
   }
-
-  return clearedCount;
+  return result;
 }
 
-// 清理TMDB缓存
-async function clearTmdbCache(): Promise<number> {
-  let clearedCount = 0;
-
-  // 清理数据库中的TMDB缓存
-  const dbCleared = await DatabaseCacheManager.clearCacheByType('tmdb');
-  clearedCount += dbCleared;
-
-  // 清理localStorage中的TMDB缓存（兜底）
-  if (typeof localStorage !== 'undefined') {
-    const keys = Object.keys(localStorage).filter((key) =>
-      key.startsWith('tmdb-'),
-    );
-    keys.forEach((key) => {
-      localStorage.removeItem(key);
-      clearedCount++;
-    });
-    console.log(`🗑️ localStorage中清理了 ${keys.length} 个TMDB缓存项`);
-  }
-
-  return clearedCount;
-}
-
-// 清理弹幕缓存
-async function clearDanmuCache(): Promise<number> {
-  let clearedCount = 0;
-
-  // 清理数据库中的弹幕缓存
-  const dbCleared = await DatabaseCacheManager.clearCacheByType('danmu');
-  clearedCount += dbCleared;
-
-  // 清理localStorage中的弹幕缓存（兜底）
-  if (typeof localStorage !== 'undefined') {
-    const keys = Object.keys(localStorage).filter(
-      (key) => key.startsWith('danmu-cache') || key === 'lunatv_danmu_cache',
-    );
-    keys.forEach((key) => {
-      localStorage.removeItem(key);
-      clearedCount++;
-    });
-    console.log(`🗑️ localStorage中清理了 ${keys.length} 个弹幕缓存项`);
-  }
-
-  return clearedCount;
-}
-
-// 清理YouTube缓存
-async function clearYouTubeCache(): Promise<number> {
-  let clearedCount = 0;
-
-  // 清理数据库中的YouTube缓存
-  const dbCleared = await DatabaseCacheManager.clearCacheByType('youtube');
-  clearedCount += dbCleared;
-
-  // 清理localStorage中的YouTube缓存（兜底）
-  if (typeof localStorage !== 'undefined') {
-    const keys = Object.keys(localStorage).filter((key) =>
-      key.startsWith('youtube-search'),
-    );
-    keys.forEach((key) => {
-      localStorage.removeItem(key);
-      clearedCount++;
-    });
-    console.log(`🗑️ localStorage中清理了 ${keys.length} 个YouTube搜索缓存项`);
-  }
-
-  return clearedCount;
-}
-
-// 清理网盘搜索缓存
-async function clearNetdiskCache(): Promise<number> {
-  let clearedCount = 0;
-
-  // 清理数据库中的网盘缓存
-  const dbCleared = await DatabaseCacheManager.clearCacheByType('netdisk');
-  clearedCount += dbCleared;
-
-  // 清理localStorage中的网盘缓存（兜底）
-  if (typeof localStorage !== 'undefined') {
-    const keys = Object.keys(localStorage).filter((key) =>
-      key.startsWith('netdisk-search'),
-    );
-    keys.forEach((key) => {
-      localStorage.removeItem(key);
-      clearedCount++;
-    });
-    console.log(`🗑️ localStorage中清理了 ${keys.length} 个网盘搜索缓存项`);
-  }
-
-  return clearedCount;
-}
-
-// 清理搜索缓存（直接调用数据库，因为search类型已从DatabaseCacheManager中移除）
-async function clearSearchCache(): Promise<number> {
-  let clearedCount = 0;
-
-  try {
-    // 直接清理数据库中的search-和cache-前缀缓存
-    await db.clearExpiredCache('search-');
-    await db.clearExpiredCache('cache-');
-    console.log('🗑️ 搜索缓存清理完成');
-    clearedCount = 1; // 标记操作已执行
-  } catch (error) {
-    console.error('清理搜索缓存失败:', error);
-  }
-
-  // 清理localStorage中的搜索缓存（兜底）
-  if (typeof localStorage !== 'undefined') {
-    const keys = Object.keys(localStorage).filter(
-      (key) => key.startsWith('search-') || key.startsWith('cache-'),
-    );
-    keys.forEach((key) => {
-      localStorage.removeItem(key);
-      clearedCount++;
-    });
-    console.log(`🗑️ localStorage中清理了 ${keys.length} 个搜索缓存项`);
-  }
-
-  return clearedCount;
-}
-
-// 清理过期缓存
-async function clearExpiredCache(): Promise<number> {
-  let clearedCount = 0;
-
-  // 清理数据库中的过期缓存
-  const dbCleared = await DatabaseCacheManager.clearExpiredCache();
-  clearedCount += dbCleared;
-
-  // 清理localStorage中的过期缓存（兜底）
-  if (typeof localStorage !== 'undefined') {
-    const keys = Object.keys(localStorage);
-    const now = Date.now();
-
-    keys.forEach((key) => {
-      try {
-        const data = localStorage.getItem(key);
-        if (!data) return;
-
-        const parsed = JSON.parse(data);
-
-        // 检查是否有过期时间字段
-        if (parsed.expire && now > parsed.expire) {
-          localStorage.removeItem(key);
-          clearedCount++;
-        } else if (parsed.timestamp && parsed.expireSeconds) {
-          const expireTime = parsed.timestamp + parsed.expireSeconds * 1000;
-          if (now > expireTime) {
-            localStorage.removeItem(key);
-            clearedCount++;
-          }
-        }
-      } catch (_error) {
-        // 数据格式错误，清理掉
-        localStorage.removeItem(key);
-        clearedCount++;
-      }
-    });
-
-    console.log(
-      `🗑️ localStorage中清理了 ${clearedCount - dbCleared} 个过期缓存项`,
-    );
-  }
-
-  return clearedCount;
-}
-
-// 清理所有缓存
-async function clearAllCache(): Promise<number> {
-  const doubanCount = await clearDoubanCache();
-  const shortdramaCount = await clearShortdramaCache();
-  const tmdbCount = await clearTmdbCache();
-  const danmuCount = await clearDanmuCache();
-  const netdiskCount = await clearNetdiskCache();
-  const youtubeCount = await clearYouTubeCache();
-  const searchCount = await clearSearchCache();
-
-  return (
-    doubanCount +
-    shortdramaCount +
-    tmdbCount +
-    danmuCount +
-    netdiskCount +
-    youtubeCount +
-    searchCount
+function formatBytes(bytes: number): string {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const unit = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
   );
-}
-
-// 格式化字节大小
-function _formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  return `${(bytes / 1024 ** unit).toFixed(unit === 0 ? 0 : 2)} ${units[unit]}`;
 }

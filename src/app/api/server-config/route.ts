@@ -1,36 +1,56 @@
 import { NextResponse } from 'next/server';
 
+import {
+  CACHE_POLICIES,
+  cacheService,
+  hasOnlyUniqueSearchParams,
+  noStoreResponseHeaders,
+  publicApiResponseHeaders,
+} from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 
 export const runtime = 'nodejs';
 
-export async function GET() {
-  const config = await loadConfig();
-
-  const result: any = {
-    SiteName: config.SiteConfig.SiteName,
-    StorageType: process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage',
-    DownloadEnabled: config.DownloadConfig?.enabled ?? true,
-  };
-
-  // 添加 OIDC 登录配置（仅公开必要信息）
-  // 优先使用新的多 Provider 配置
-  if (config.OIDCProviders && config.OIDCProviders.length > 0) {
-    // 只返回启用的 Provider 的公开信息
-    const enabledProviders = config.OIDCProviders.filter((p) => p.enabled).map(
-      (p) => ({
-        id: p.id,
-        name: p.name,
-        buttonText: p.buttonText,
-        issuer: p.issuer, // 用于provider检测（公开信息，不敏感）
-        // 注意：不返回 ClientSecret、Endpoints 等敏感信息
-      }),
+export async function GET(request: Request) {
+  if (!hasOnlyUniqueSearchParams(new URL(request.url).searchParams, [])) {
+    return NextResponse.json(
+      { error: '包含未知或重复参数' },
+      { status: 400, headers: noStoreResponseHeaders() },
     );
-
-    if (enabledProviders.length > 0) {
-      result.OIDCProviders = enabledProviders;
-    }
   }
-
-  return NextResponse.json(result);
+  try {
+    const cached = await cacheService.getOrLoadResult(
+      CACHE_POLICIES.CONFIG_PUBLIC,
+      { projection: 'browser-safe' },
+      async () => {
+        const config = await loadConfig();
+        const projection: Record<string, unknown> = {
+          SiteName: config.SiteConfig.SiteName,
+          StorageType: process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage',
+          DownloadEnabled: config.DownloadConfig?.enabled ?? true,
+        };
+        const providers = (config.OIDCProviders || [])
+          .filter((provider) => provider.enabled)
+          .map((provider) => ({
+            id: provider.id,
+            name: provider.name,
+            buttonText: provider.buttonText,
+            issuer: provider.issuer,
+          }));
+        if (providers.length) projection.OIDCProviders = providers;
+        return projection;
+      },
+    );
+    return NextResponse.json(cached.value, {
+      headers: publicApiResponseHeaders(CACHE_POLICIES.CONFIG_PUBLIC, {
+        ttlSeconds: cached.ttlRemaining,
+        negative: cached.negative,
+      }),
+    });
+  } catch {
+    return NextResponse.json(
+      { error: '获取公开配置失败' },
+      { status: 500, headers: noStoreResponseHeaders() },
+    );
+  }
 }

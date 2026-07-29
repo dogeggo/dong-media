@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { authenticateRequest } from '@/lib/request-auth';
 import { parseSafeHttpUrl } from '@/lib/safe-upstream-url';
 
@@ -64,11 +65,10 @@ function detectPlatform(url: URL): string | null {
   );
 }
 
-const responseHeaders = {
-  'Cache-Control': 'private, no-store, max-age=0',
+const responseHeaders = noStoreResponseHeaders({
   'X-Content-Type-Options': 'nosniff',
   'X-Robots-Tag': 'noindex, nofollow, noarchive',
-};
+});
 
 export async function GET(request: NextRequest) {
   if (!(await authenticateRequest(request))) {

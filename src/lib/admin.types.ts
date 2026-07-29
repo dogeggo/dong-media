@@ -9,7 +9,6 @@ export interface AdminConfig {
     SiteName: string;
     Announcement: string;
     SearchDownstreamMaxPage: number;
-    SiteInterfaceCacheTime: number;
     ShowAdultContent: boolean; // 是否显示成人内容，默认 false
     FluidSearch: boolean;
     // TMDB配置

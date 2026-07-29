@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { AdminConfig, AdminConfigResult } from '@/lib/admin.types';
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { configSelfCheck, loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 
@@ -48,9 +49,7 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json(result, {
-      headers: {
-        'Cache-Control': 'no-store', // 管理员配置不缓存
-      },
+      headers: noStoreResponseHeaders(),
     });
   } catch (error) {
     console.error('获取管理员配置失败:', error);
@@ -104,12 +103,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { success: true },
       {
-        headers: {
-          'Cache-Control':
-            'no-store, no-cache, must-revalidate, proxy-revalidate',
-          Pragma: 'no-cache',
-          Expires: '0',
-        },
+        headers: noStoreResponseHeaders(),
       },
     );
   } catch (error) {

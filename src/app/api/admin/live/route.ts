@@ -3,9 +3,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import {
+  CACHE_POLICIES,
+  cacheService,
+  noStoreResponseHeaders,
+} from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
-import { deleteCachedLiveChannels, refreshLiveChannels } from '@/lib/live';
+import {
+  deleteCachedLiveChannels,
+  type LiveChannels,
+  refreshLiveChannels,
+} from '@/lib/live';
 
 export const runtime = 'nodejs';
 
@@ -38,6 +47,9 @@ export async function POST(request: NextRequest) {
       config.LiveConfig = [];
     }
 
+    let refreshedSourceKey: string | undefined;
+    let refreshedChannels: LiveChannels | null | undefined;
+
     switch (action) {
       case 'add':
         // 检查是否已存在相同的 key
@@ -61,8 +73,9 @@ export async function POST(request: NextRequest) {
         };
 
         try {
-          const nums = await refreshLiveChannels(liveInfo);
-          liveInfo.channelNumber = nums;
+          refreshedChannels = await refreshLiveChannels(liveInfo);
+          refreshedSourceKey = liveInfo.key;
+          liveInfo.channelNumber = refreshedChannels?.channelNumber || 0;
         } catch (error) {
           console.error('刷新直播源失败:', error);
           liveInfo.channelNumber = 0;
@@ -87,7 +100,7 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        deleteCachedLiveChannels(key);
+        await deleteCachedLiveChannels(key);
 
         config.LiveConfig.splice(deleteIndex, 1);
         break;
@@ -134,11 +147,11 @@ export async function POST(request: NextRequest) {
 
         // 刷新频道数
         try {
-          const nums = await refreshLiveChannels(editSource);
-          editSource.channelNumber = nums;
+          refreshedChannels = await refreshLiveChannels(editSource);
+          refreshedSourceKey = editSource.key;
+          editSource.channelNumber = refreshedChannels?.channelNumber || 0;
         } catch (error) {
           console.error('刷新直播源失败:', error);
-          editSource.channelNumber = 0;
         }
         break;
 
@@ -178,12 +191,21 @@ export async function POST(request: NextRequest) {
     // 保存配置
     await db.saveAdminConfig(config);
 
+    // 配置保存会切换 live generation。把刚验证成功的数据重新写入新
+    // generation，避免新增/编辑直播源后第一次读取又立刻回源。
+    if (refreshedSourceKey && refreshedChannels !== undefined) {
+      await cacheService.set(
+        CACHE_POLICIES.LIVE_CHANNELS,
+        { sourceKey: refreshedSourceKey },
+        refreshedChannels,
+        { isNegative: (value) => value === null },
+      );
+    }
+
     return NextResponse.json(
       { success: true },
       {
-        headers: {
-          'Cache-Control': 'no-store', // 不缓存结果
-        },
+        headers: noStoreResponseHeaders(),
       },
     );
   } catch (error) {

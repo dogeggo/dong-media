@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 
@@ -311,9 +312,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { ok: true },
       {
-        headers: {
-          'Cache-Control': 'no-store',
-        },
+        headers: noStoreResponseHeaders(),
       },
     );
   } catch (error) {

@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 
 export const runtime = 'nodejs';
@@ -19,12 +20,15 @@ export async function GET(request: NextRequest) {
       (source) => !source.disabled,
     );
 
-    return NextResponse.json({
-      success: true,
-      data: liveSources,
-    });
+    return NextResponse.json(
+      { success: true, data: liveSources },
+      { headers: noStoreResponseHeaders() },
+    );
   } catch (error) {
     console.error('获取直播源失败:', error);
-    return NextResponse.json({ error: '获取直播源失败' }, { status: 500 });
+    return NextResponse.json(
+      { error: '获取直播源失败' },
+      { status: 500, headers: noStoreResponseHeaders() },
+    );
   }
 }

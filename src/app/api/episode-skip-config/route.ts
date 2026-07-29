@@ -3,17 +3,25 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { EpisodeSkipConfig } from '@/lib/types';
 
 export const runtime = 'nodejs';
 
+function json(body: unknown, init?: ResponseInit) {
+  return NextResponse.json(body, {
+    ...init,
+    headers: noStoreResponseHeaders(init?.headers),
+  });
+}
+
 export async function GET(request: NextRequest) {
   try {
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: '未登录' }, { status: 401 });
+      return json({ error: '未登录' }, { status: 401 });
     }
 
     const config = await loadConfig();
@@ -23,10 +31,10 @@ export async function GET(request: NextRequest) {
         (u) => u.username === authInfo.username,
       );
       if (!user) {
-        return NextResponse.json({ error: '用户不存在' }, { status: 401 });
+        return json({ error: '用户不存在' }, { status: 401 });
       }
       if (user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
+        return json({ error: '用户已被封禁' }, { status: 401 });
       }
     }
 
@@ -41,18 +49,15 @@ export async function GET(request: NextRequest) {
         source,
         id,
       );
-      return NextResponse.json(config);
+      return json(config);
     } else {
       // 获取所有配置
       const configs = await db.getAllEpisodeSkipConfigs(authInfo.username);
-      return NextResponse.json(configs);
+      return json(configs);
     }
   } catch (error) {
     console.error('获取剧集跳过配置失败:', error);
-    return NextResponse.json(
-      { error: '获取剧集跳过配置失败' },
-      { status: 500 },
-    );
+    return json({ error: '获取剧集跳过配置失败' }, { status: 500 });
   }
 }
 
@@ -60,7 +65,7 @@ export async function POST(request: NextRequest) {
   try {
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: '未登录' }, { status: 401 });
+      return json({ error: '未登录' }, { status: 401 });
     }
 
     const adminConfig = await loadConfig();
@@ -70,10 +75,10 @@ export async function POST(request: NextRequest) {
         (u) => u.username === authInfo.username,
       );
       if (!user) {
-        return NextResponse.json({ error: '用户不存在' }, { status: 401 });
+        return json({ error: '用户不存在' }, { status: 401 });
       }
       if (user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
+        return json({ error: '用户已被封禁' }, { status: 401 });
       }
     }
 
@@ -81,7 +86,7 @@ export async function POST(request: NextRequest) {
     const { source, id, config } = body;
 
     if (!source || !id || !config) {
-      return NextResponse.json({ error: '缺少必要参数' }, { status: 400 });
+      return json({ error: '缺少必要参数' }, { status: 400 });
     }
 
     // 验证配置格式
@@ -100,13 +105,10 @@ export async function POST(request: NextRequest) {
       episodeSkipConfig,
     );
 
-    return NextResponse.json({ success: true });
+    return json({ success: true });
   } catch (error) {
     console.error('保存剧集跳过配置失败:', error);
-    return NextResponse.json(
-      { error: '保存剧集跳过配置失败' },
-      { status: 500 },
-    );
+    return json({ error: '保存剧集跳过配置失败' }, { status: 500 });
   }
 }
 
@@ -114,7 +116,7 @@ export async function DELETE(request: NextRequest) {
   try {
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: '未登录' }, { status: 401 });
+      return json({ error: '未登录' }, { status: 401 });
     }
 
     const adminConfig = await loadConfig();
@@ -124,10 +126,10 @@ export async function DELETE(request: NextRequest) {
         (u) => u.username === authInfo.username,
       );
       if (!user) {
-        return NextResponse.json({ error: '用户不存在' }, { status: 401 });
+        return json({ error: '用户不存在' }, { status: 401 });
       }
       if (user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
+        return json({ error: '用户已被封禁' }, { status: 401 });
       }
     }
 
@@ -136,17 +138,14 @@ export async function DELETE(request: NextRequest) {
     const id = searchParams.get('id');
 
     if (!source || !id) {
-      return NextResponse.json({ error: '缺少必要参数' }, { status: 400 });
+      return json({ error: '缺少必要参数' }, { status: 400 });
     }
 
     await db.deleteEpisodeSkipConfig(authInfo.username, source, id);
 
-    return NextResponse.json({ success: true });
+    return json({ success: true });
   } catch (error) {
     console.error('删除剧集跳过配置失败:', error);
-    return NextResponse.json(
-      { error: '删除剧集跳过配置失败' },
-      { status: 500 },
-    );
+    return json({ error: '删除剧集跳过配置失败' }, { status: 500 });
   }
 }

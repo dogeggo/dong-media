@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import {
+  noStoreResponseHeaders,
+  privateResponseHeaders,
+} from '@/lib/cache-system';
 import { authenticateRequest } from '@/lib/request-auth';
 import { safeFetch } from '@/lib/safe-upstream-url';
 
@@ -12,7 +16,10 @@ import { safeFetch } from '@/lib/safe-upstream-url';
  */
 export async function GET(request: NextRequest) {
   if (!(await authenticateRequest(request))) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json(
+      { error: 'Unauthorized' },
+      { status: 401, headers: noStoreResponseHeaders() },
+    );
   }
 
   const { searchParams } = new URL(request.url);
@@ -21,13 +28,13 @@ export async function GET(request: NextRequest) {
   if (!videoId) {
     return NextResponse.json(
       { error: 'Missing videoId parameter' },
-      { status: 400 },
+      { status: 400, headers: noStoreResponseHeaders() },
     );
   }
   if (!/^[a-zA-Z0-9_-]{6,20}$/.test(videoId)) {
     return NextResponse.json(
       { error: 'Invalid videoId parameter' },
-      { status: 400 },
+      { status: 400, headers: noStoreResponseHeaders() },
     );
   }
 
@@ -47,12 +54,12 @@ export async function GET(request: NextRequest) {
       if (response.status === 404) {
         return NextResponse.json(
           { error: 'Video not found or unavailable' },
-          { status: 404 },
+          { status: 404, headers: noStoreResponseHeaders() },
         );
       }
       return NextResponse.json(
         { error: `YouTube API returned ${response.status}` },
-        { status: response.status },
+        { status: response.status, headers: noStoreResponseHeaders() },
       );
     }
 
@@ -60,16 +67,15 @@ export async function GET(request: NextRequest) {
 
     // 返回数据，并设置缓存头
     return NextResponse.json(data, {
-      headers: {
-        'Cache-Control': 'private, max-age=3600',
+      headers: privateResponseHeaders(3600, {
         'X-Content-Type-Options': 'nosniff',
-      },
+      }),
     });
   } catch (error) {
     console.error('YouTube API proxy error:', error);
     return NextResponse.json(
       { error: 'Failed to fetch from YouTube API' },
-      { status: 500 },
+      { status: 500, headers: noStoreResponseHeaders() },
     );
   }
 }

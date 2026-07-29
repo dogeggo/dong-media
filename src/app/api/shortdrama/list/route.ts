@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import '@/lib/server-cache';
 
-import { SHORTDRAMA_CACHE_EXPIRE } from '@/lib/cache';
+import {
+  CACHE_POLICIES,
+  cacheService,
+  hasOnlyUniqueSearchParams,
+  noStoreResponseHeaders,
+  publicApiResponseHeaders,
+} from '@/lib/cache-system';
 import { getShortDramaList } from '@/lib/shortdrama-api';
 
 // 强制动态路由，禁用所有缓存
@@ -12,54 +17,54 @@ export const fetchCache = 'force-no-store';
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = request.nextUrl;
+    if (!hasOnlyUniqueSearchParams(searchParams, ['categoryId', 'page'])) {
+      return NextResponse.json(
+        { error: '包含未知或重复参数' },
+        { status: 400, headers: noStoreResponseHeaders() },
+      );
+    }
     const categoryId = searchParams.get('categoryId');
     const page = searchParams.get('page');
 
     if (!categoryId) {
       return NextResponse.json(
         { error: '缺少必要参数: categoryId' },
-        { status: 400 },
+        { status: 400, headers: noStoreResponseHeaders() },
       );
     }
 
-    const category = parseInt(categoryId);
-    const pageNum = page ? parseInt(page) : 1;
+    const category = Number(categoryId);
+    const pageNum = page ? Number(page) : 1;
 
-    if (isNaN(category) || isNaN(pageNum)) {
-      return NextResponse.json({ error: '参数格式错误' }, { status: 400 });
+    if (
+      !Number.isSafeInteger(category) ||
+      category !== 1 ||
+      !Number.isSafeInteger(pageNum) ||
+      pageNum < 1 ||
+      pageNum > 1_000
+    ) {
+      return NextResponse.json(
+        { error: 'categoryId 必须为 1，分页参数必须为正整数' },
+        { status: 400, headers: noStoreResponseHeaders() },
+      );
     }
-    const result = await getShortDramaList(category, pageNum);
-
-    const response = NextResponse.json(result);
-
-    const cacheTime =
-      pageNum === 1
-        ? SHORTDRAMA_CACHE_EXPIRE.lists * 2
-        : SHORTDRAMA_CACHE_EXPIRE.lists;
-    response.headers.set(
-      'Cache-Control',
-      `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
+    const cached = await cacheService.getOrLoadResult(
+      CACHE_POLICIES.SHORTDRAMA_LIST,
+      { category, page: pageNum },
+      () => getShortDramaList(category, pageNum),
+      { isNegative: (value) => value.list.length === 0 },
     );
-    response.headers.set('CDN-Cache-Control', `public, s-maxage=${cacheTime}`);
-    response.headers.set(
-      'Vercel-CDN-Cache-Control',
-      `public, s-maxage=${cacheTime}`,
-    );
-
-    // 调试信息
-    response.headers.set('X-Cache-Duration', '2hour');
-    response.headers.set(
-      'X-Cache-Expires-At',
-      new Date(Date.now() + cacheTime * 1000).toISOString(),
-    );
-    response.headers.set('X-Debug-Timestamp', new Date().toISOString());
-
-    // Vary头确保不同设备有不同缓存
-    response.headers.set('Vary', 'Accept-Encoding, User-Agent');
-
-    return response;
+    return NextResponse.json(cached.value, {
+      headers: publicApiResponseHeaders(CACHE_POLICIES.SHORTDRAMA_LIST, {
+        ttlSeconds: cached.ttlRemaining,
+        negative: cached.negative,
+      }),
+    });
   } catch (error) {
     console.error('获取短剧列表失败:', error);
-    return NextResponse.json({ error: '服务器内部错误' }, { status: 500 });
+    return NextResponse.json(
+      { error: '服务器内部错误' },
+      { status: 500, headers: noStoreResponseHeaders() },
+    );
   }
 }

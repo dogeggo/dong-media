@@ -1,128 +1,110 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
+import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
-import { EpisodeSkipConfig } from '@/lib/types';
+import type { EpisodeSkipConfig } from '@/lib/types';
 
-// 配置 Node.js Runtime
 export const runtime = 'nodejs';
+
+function json(body: unknown, init?: ResponseInit) {
+  return NextResponse.json(body, {
+    ...init,
+    headers: noStoreResponseHeaders(init?.headers),
+  });
+}
+
+async function authenticatedUsername(
+  request: NextRequest,
+): Promise<string | Response> {
+  const authInfo = getAuthInfoFromCookie(request);
+  if (!authInfo?.username) {
+    return json({ error: '用户未登录' }, { status: 401 });
+  }
+  if (authInfo.username === process.env.USERNAME) return authInfo.username;
+
+  const config = await loadConfig();
+  const user = config.UserConfig.Users.find(
+    (candidate) => candidate.username === authInfo.username,
+  );
+  if (!user || user.banned) {
+    return json(
+      { error: user?.banned ? '用户已被封禁' : '用户不存在' },
+      { status: 401 },
+    );
+  }
+  return authInfo.username;
+}
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { action, key, config, username } = body;
+    const username = await authenticatedUsername(request);
+    if (username instanceof Response) return username;
 
-    // 验证请求参数
-    if (!action) {
-      return NextResponse.json({ error: '缺少操作类型' }, { status: 400 });
+    const body = (await request.json()) as {
+      action?: string;
+      key?: string;
+      config?: EpisodeSkipConfig;
+    };
+    const { action, key, config } = body;
+    if (!action) return json({ error: '缺少操作类型' }, { status: 400 });
+
+    if (action === 'getAll') {
+      return json({ configs: await db.getAllSkipConfigs(username) });
     }
 
-    // 获取认证信息
-    const authInfo = getAuthInfoFromCookie(request);
-
-    // 如果是直接传入的认证信息（客户端模式），使用传入的信息
-    const finalUsername = username || authInfo?.username;
-
-    if (!finalUsername) {
-      return NextResponse.json({ error: '用户未登录' }, { status: 401 });
+    if (!key) return json({ error: '缺少配置键' }, { status: 400 });
+    const [source, id] = key.split('+');
+    if (!source || !id) {
+      return json({ error: '无效的key格式' }, { status: 400 });
     }
 
     switch (action) {
-      case 'get': {
-        if (!key) {
-          return NextResponse.json({ error: '缺少配置键' }, { status: 400 });
-        }
-
-        // 解析 key 为 source 和 id (格式: source+id)
-        const [source, id] = key.split('+');
-        if (!source || !id) {
-          return NextResponse.json({ error: '无效的key格式' }, { status: 400 });
-        }
-
-        const skipConfig = await db.getSkipConfig(finalUsername, source, id);
-        return NextResponse.json({ config: skipConfig });
-      }
-
+      case 'get':
+        return json({ config: await db.getSkipConfig(username, source, id) });
       case 'set': {
-        if (!key || !config) {
-          return NextResponse.json(
-            { error: '缺少配置键或配置数据' },
-            { status: 400 },
-          );
+        if (!isValidConfig(config)) {
+          return json({ error: '配置数据格式错误' }, { status: 400 });
         }
-
-        // 解析 key 为 source 和 id (格式: source+id)
-        const [source, id] = key.split('+');
-        if (!source || !id) {
-          return NextResponse.json({ error: '无效的key格式' }, { status: 400 });
-        }
-
-        // 验证配置数据结构
-        if (
-          !config.source ||
-          !config.id ||
-          !config.title ||
-          !Array.isArray(config.segments)
-        ) {
-          return NextResponse.json(
-            { error: '配置数据格式错误' },
-            { status: 400 },
-          );
-        }
-
-        // 验证片段数据
-        for (const segment of config.segments) {
-          if (
-            typeof segment.start !== 'number' ||
-            typeof segment.end !== 'number' ||
-            segment.start >= segment.end ||
-            !['opening', 'ending'].includes(segment.type)
-          ) {
-            return NextResponse.json(
-              { error: '片段数据格式错误' },
-              { status: 400 },
-            );
-          }
-        }
-
-        await db.setSkipConfig(
-          finalUsername,
-          source,
-          id,
-          config as EpisodeSkipConfig,
-        );
-        return NextResponse.json({ success: true });
+        await db.setSkipConfig(username, source, id, config);
+        return json({
+          success: true,
+          configs: await db.getAllSkipConfigs(username),
+        });
       }
-
-      case 'getAll': {
-        const allConfigs = await db.getAllSkipConfigs(finalUsername);
-        return NextResponse.json({ configs: allConfigs });
-      }
-
-      case 'delete': {
-        if (!key) {
-          return NextResponse.json({ error: '缺少配置键' }, { status: 400 });
-        }
-
-        // 解析 key 为 source 和 id (格式: source+id)
-        const [source, id] = key.split('+');
-        if (!source || !id) {
-          return NextResponse.json({ error: '无效的key格式' }, { status: 400 });
-        }
-
-        await db.deleteSkipConfig(finalUsername, source, id);
-        return NextResponse.json({ success: true });
-      }
-
+      case 'delete':
+        await db.deleteSkipConfig(username, source, id);
+        return json({
+          success: true,
+          configs: await db.getAllSkipConfigs(username),
+        });
       default:
-        return NextResponse.json(
-          { error: '不支持的操作类型' },
-          { status: 400 },
-        );
+        return json({ error: '不支持的操作类型' }, { status: 400 });
     }
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('跳过配置 API 错误:', error);
-    return NextResponse.json({ error: '服务器内部错误' }, { status: 500 });
+    return json({ error: '服务器内部错误' }, { status: 500 });
   }
+}
+
+function isValidConfig(
+  config: EpisodeSkipConfig | undefined,
+): config is EpisodeSkipConfig {
+  if (
+    !config?.source ||
+    !config.id ||
+    !config.title ||
+    !Array.isArray(config.segments)
+  ) {
+    return false;
+  }
+  return config.segments.every(
+    (segment) =>
+      typeof segment.start === 'number' &&
+      typeof segment.end === 'number' &&
+      segment.start < segment.end &&
+      (segment.type === 'opening' || segment.type === 'ending'),
+  );
 }

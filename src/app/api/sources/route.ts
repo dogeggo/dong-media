@@ -1,14 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { getAvailableApiSites } from '@/lib/config';
 
 export const runtime = 'nodejs';
 
+function privateJson(body: unknown, init?: ResponseInit) {
+  return NextResponse.json(body, {
+    ...init,
+    headers: noStoreResponseHeaders(init?.headers),
+  });
+}
+
 export async function GET(request: NextRequest) {
   const authInfo = getAuthInfoFromCookie(request);
   if (!authInfo || !authInfo.username) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return privateJson({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
@@ -20,13 +28,9 @@ export async function GET(request: NextRequest) {
       name: site.name,
     }));
 
-    return NextResponse.json(sources, {
-      headers: {
-        'Cache-Control': 'public, max-age=300', // 5分钟缓存
-      },
-    });
+    return privateJson(sources);
   } catch (error) {
     console.error('获取数据源列表失败:', error);
-    return NextResponse.json({ error: '获取数据源列表失败' }, { status: 500 });
+    return privateJson({ error: '获取数据源列表失败' }, { status: 500 });
   }
 }

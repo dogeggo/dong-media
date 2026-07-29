@@ -69,56 +69,13 @@ export default function ReleaseCalendarPage() {
     });
   };
 
-  // 清理过期缓存
-  const cleanExpiredCache = () => {
-    const CACHE_DURATION = 2 * 60 * 60 * 1000; // 2小时
-    const now = Date.now();
-
-    // 检查release calendar缓存
-    const cacheTimeKey = 'release_calendar_all_data_time';
-    const cachedTime = localStorage.getItem(cacheTimeKey);
-
-    if (cachedTime) {
-      const age = now - parseInt(cachedTime);
-      if (age >= CACHE_DURATION) {
-        localStorage.removeItem('release_calendar_all_data');
-        localStorage.removeItem(cacheTimeKey);
-        console.log('已清理过期的发布日历缓存');
-      }
-    }
-
-    // 清理其他可能过期的缓存项
-    const keysToCheck = [
-      'upcoming_releases_cache',
-      'upcoming_releases_cache_time',
-    ];
-
-    keysToCheck.forEach((key) => {
-      if (key.endsWith('_time')) {
-        const timeStr = localStorage.getItem(key);
-        if (timeStr) {
-          const age = now - parseInt(timeStr);
-          if (age >= CACHE_DURATION) {
-            const dataKey = key.replace('_time', '');
-            localStorage.removeItem(dataKey);
-            localStorage.removeItem(key);
-            console.log(`已清理过期缓存: ${dataKey}`);
-          }
-        }
-      }
-    });
-  };
-
-  // 获取数据（简化版，移除localStorage缓存，依赖API数据库缓存）
+  // 获取数据；浏览器会话状态由页面管理，业务缓存统一由服务端策略处理。
   const fetchData = async (reset = false) => {
     try {
       setLoading(true);
       setError(null);
 
-      // 清理过期的localStorage缓存（兼容性清理）
-      cleanExpiredCache();
-
-      // 🌐 直接从API获取数据（API有数据库缓存，全局共享，24小时有效）
+      // 🌐 直接从 API 获取数据（服务端统一缓存完整日历）。
       console.log('🌐 正在从API获取发布日历数据...');
       const apiUrl = reset
         ? '/api/release-calendar?refresh=true'
@@ -220,12 +177,7 @@ export default function ReleaseCalendarPage() {
     console.log('📅 刷新上映日程数据...');
 
     try {
-      // 清除遗留的localStorage缓存（兼容性清理）
-      localStorage.removeItem('release_calendar_all_data');
-      localStorage.removeItem('release_calendar_all_data_time');
-      console.log('✅ 已清除遗留的localStorage缓存');
-
-      // 🔄 强制刷新（API会清除数据库缓存并重新获取）
+      // 🔄 强制刷新服务端统一缓存并重新获取。
       await fetchData(true);
       console.log('🎉 上映日程数据刷新成功！');
     } catch (error) {
@@ -247,19 +199,7 @@ export default function ReleaseCalendarPage() {
     setFilters(resetFiltersState);
     setCurrentPage(1);
 
-    // 如果有缓存数据，使用重置后的过滤条件重新应用过滤
-    const cachedData = localStorage.getItem('release_calendar_all_data');
-    if (cachedData) {
-      const allData = JSON.parse(cachedData);
-      // 直接使用重置后的过滤条件，而不是依赖state（state更新是异步的）
-      const filteredData = applyClientSideFiltersWithParams(
-        allData,
-        resetFiltersState,
-      );
-      setData(filteredData);
-    } else {
-      fetchData(false);
-    }
+    void fetchData(false);
   };
 
   // 前端分页逻辑

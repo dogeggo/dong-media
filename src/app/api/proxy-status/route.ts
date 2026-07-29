@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 
 export const runtime = 'nodejs';
@@ -72,10 +73,9 @@ export async function GET(_request: NextRequest) {
       },
       {
         status: 200,
-        headers: {
+        headers: noStoreResponseHeaders({
           'Content-Type': 'application/json',
-          'Cache-Control': 'no-store', // 不缓存状态
-        },
+        }),
       },
     );
   } catch (error) {

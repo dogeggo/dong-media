@@ -1,6 +1,9 @@
-﻿import { SEARCH_CACHE_EXPIRE } from '@/lib/cache';
+﻿import {
+  CACHE_POLICIES,
+  cacheService,
+  hashCacheValue,
+} from '@/lib/cache-system';
 import { API_CONFIG, ApiSite, getShowAdultContent } from '@/lib/config';
-import { getCache, setCache } from '@/lib/server-cache';
 import { SearchResult } from '@/lib/types';
 import { cleanHtmlTags } from '@/lib/utils';
 import { yellowWords } from '@/lib/yellow';
@@ -25,110 +28,83 @@ async function searchWithCache(
   apiSite: ApiSite,
   page: number,
   url: string,
+  scope: string,
   timeoutMs = 8000,
 ): Promise<{ results: SearchResult[]; pageCount?: number }> {
-  const cacheKey = 'video-search-' + url;
-  // 先查缓存
-  const cached = await getCache(cacheKey);
-  if (cached) {
-    return cached;
-  }
-
-  // 缓存未命中，发起网络请求
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
   try {
-    const response = await fetch(url, {
-      headers: API_CONFIG.search.headers,
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      if (response.status === 403) {
-        await setCache(cacheKey, [], SEARCH_CACHE_EXPIRE);
-      }
-      return { results: [] };
-    }
-
-    const data = await response.json();
-    if (
-      !data ||
-      !data.list ||
-      !Array.isArray(data.list) ||
-      data.list.length === 0
-    ) {
-      // 空结果不做负缓存要求，这里不写入缓存
-      return { results: [] };
-    }
-
-    // 处理结果数据
-    let results: SearchResult[] = [];
-    data.list.forEach((item: ApiSearchItem) => {
-      let episodes: string[] = [];
-      let titles: string[] = [];
-      // 使用正则表达式从 vod_play_url 提取 m3u8 链接
-      if (item.vod_play_url) {
-        // 先用 $$$ 分割
-        const vod_play_url_array = item.vod_play_url.split('$$$');
-        // 分集之间#分割，标题和播放链接 $ 分割
-        vod_play_url_array.forEach((url: string) => {
-          const matchEpisodes: string[] = [];
-          const matchTitles: string[] = [];
-          const title_url_array = url.split('#');
-          title_url_array.forEach((title_url: string) => {
-            const episode_title_url = title_url.split('$');
-            if (
-              episode_title_url.length === 2 &&
-              episode_title_url[1].endsWith('.m3u8')
-            ) {
-              matchTitles.push(episode_title_url[0]);
-              matchEpisodes.push(episode_title_url[1]);
-            }
+    return await cacheService.getOrLoad(
+      CACHE_POLICIES.SEARCH_RESULTS,
+      { source: apiSite.key, page, request: hashCacheValue(url) },
+      async () => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const response = await fetch(url, {
+            headers: API_CONFIG.search.headers,
+            signal: controller.signal,
           });
-          if (matchEpisodes.length > episodes.length) {
-            episodes = matchEpisodes;
-            titles = matchTitles;
+          if (!response.ok) {
+            throw new Error(`Search upstream returned ${response.status}`);
           }
-        });
-      }
-      if (episodes.length === 0) {
-        return;
-      }
-      results.push({
-        id: item.vod_id.toString(),
-        title: item.vod_name.trim().replace(/\s+/g, ' '),
-        poster: item.vod_pic?.trim() || '', // 确保poster为有效字符串，过滤空白
-        episodes,
-        episodes_titles: titles,
-        source: apiSite.key,
-        source_name: apiSite.name,
-        class: item.vod_class,
-        year: item.vod_year
-          ? item.vod_year.match(/\d{4}/)?.[0] || ''
-          : 'unknown',
-        desc: cleanHtmlTags(item.vod_content || ''),
-        type_name: item.type_name,
-        douban_id: item.vod_douban_id,
-        remarks: item.vod_remarks, // 传递备注信息（如"已完结"等）
-      });
-    });
-    const pageCount = page === 1 ? data.pagecount || 1 : undefined;
-    var result = { results, pageCount };
-    await setCache(cacheKey, result, SEARCH_CACHE_EXPIRE);
-    return { results, pageCount };
-  } catch (error: any) {
-    clearTimeout(timeoutId);
-    // 识别被 AbortController 中止（超时）
-    const aborted =
-      error?.name === 'AbortError' ||
-      error?.code === 20 ||
-      error?.message?.includes('aborted');
-    if (aborted) {
-      await setCache(cacheKey, [], SEARCH_CACHE_EXPIRE);
-    }
+
+          const data = await response.json();
+          if (!data?.list || !Array.isArray(data.list)) {
+            return { results: [] };
+          }
+
+          const results: SearchResult[] = [];
+          data.list.forEach((item: ApiSearchItem) => {
+            let episodes: string[] = [];
+            let titles: string[] = [];
+            if (item.vod_play_url) {
+              const playSources = item.vod_play_url.split('$$$');
+              playSources.forEach((playSource: string) => {
+                const matchEpisodes: string[] = [];
+                const matchTitles: string[] = [];
+                playSource.split('#').forEach((titleAndUrl: string) => {
+                  const episode = titleAndUrl.split('$');
+                  if (episode.length === 2 && episode[1].endsWith('.m3u8')) {
+                    matchTitles.push(episode[0]);
+                    matchEpisodes.push(episode[1]);
+                  }
+                });
+                if (matchEpisodes.length > episodes.length) {
+                  episodes = matchEpisodes;
+                  titles = matchTitles;
+                }
+              });
+            }
+            if (episodes.length === 0) return;
+            results.push({
+              id: item.vod_id.toString(),
+              title: item.vod_name.trim().replace(/\s+/g, ' '),
+              poster: item.vod_pic?.trim() || '',
+              episodes,
+              episodes_titles: titles,
+              source: apiSite.key,
+              source_name: apiSite.name,
+              class: item.vod_class,
+              year: item.vod_year
+                ? item.vod_year.match(/\d{4}/)?.[0] || ''
+                : 'unknown',
+              desc: cleanHtmlTags(item.vod_content || ''),
+              type_name: item.type_name,
+              douban_id: item.vod_douban_id,
+              remarks: item.vod_remarks,
+            });
+          });
+          const pageCount = page === 1 ? data.pagecount || 1 : undefined;
+          return { results, pageCount };
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      },
+      {
+        scope,
+        isNegative: (value) => value.results.length === 0,
+      },
+    );
+  } catch {
     return { results: [] };
   }
 }
@@ -150,7 +126,14 @@ export async function searchFromApi(
         API_CONFIG.search.pagePath
           .replace('query', encodedQuery)
           .replace('page', '1');
-      const firstPageResult = await searchWithCache(apiSite, 1, page1Url, 8000);
+      const cacheScope = username || 'system';
+      const firstPageResult = await searchWithCache(
+        apiSite,
+        1,
+        page1Url,
+        cacheScope,
+        8000,
+      );
       if (firstPageResult.results.length > 0) {
         searchResults.push(...firstPageResult.results);
       }
@@ -163,7 +146,13 @@ export async function searchFromApi(
             .replace('query', encodedQuery)
             .replace('page', page.toString());
         const pagePromise = (async () => {
-          const pageResult = await searchWithCache(apiSite, page, apiUrl, 8000);
+          const pageResult = await searchWithCache(
+            apiSite,
+            page,
+            apiUrl,
+            cacheScope,
+            8000,
+          );
           return pageResult.results;
         })();
         additionalPagePromises.push(pagePromise);

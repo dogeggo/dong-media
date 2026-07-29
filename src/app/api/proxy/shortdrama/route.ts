@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { authenticateRequest } from '@/lib/request-auth';
 import {
   isExecutableDocumentContentType,
@@ -59,10 +60,9 @@ async function proxyMedia(request: NextRequest, method: 'GET' | 'HEAD') {
       );
     }
 
-    const headers = new Headers({
+    const headers = noStoreResponseHeaders({
       'Content-Type': contentType || 'application/octet-stream',
       'Accept-Ranges': response.headers.get('accept-ranges') || 'bytes',
-      'Cache-Control': 'private, no-store, max-age=0',
       'Content-Security-Policy': "default-src 'none'; sandbox",
       'X-Content-Type-Options': 'nosniff',
       'X-Robots-Tag': 'noindex, nofollow, noarchive',

@@ -769,7 +769,6 @@ After deployment, it's an empty shell application. You need to fill in the confi
 
 ```json
 {
-  "cache_time": 7200,
   "api_site": {
     "example_source": {
       "api": "http://example.com/api.php/provide/vod",
@@ -794,7 +793,6 @@ After deployment, it's an empty shell application. You need to fill in the confi
 
 ### 📖 Field Description
 
-- **cache_time**: API cache duration (seconds), recommended 3600-7200
 - **api_site**: Video resource site configuration
   - `key`: Unique identifier (lowercase letters/numbers)
   - `api`: Resource site vod JSON API address (supports Apple CMS V10 format)

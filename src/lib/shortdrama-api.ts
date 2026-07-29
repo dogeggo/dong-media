@@ -2,15 +2,7 @@
 
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
-import {
-  getCache,
-  getShortdramaCacheKey,
-  setCache,
-  SHORTDRAMA_CACHE_EXPIRE,
-} from './cache';
 import { ShortDramaCategory, ShortDramaItem } from './types';
-
-const shortDramaCategoryIdCache = new Map<string, number>();
 
 const getApiBase = async () => {
   if (typeof window !== 'undefined') {
@@ -18,7 +10,11 @@ const getApiBase = async () => {
   }
   const { loadConfig } = await import('@/lib/config');
   const config = await loadConfig();
-  const urls = config.ShortDramaConfig.primaryApiUrl.split(';');
+  const urls = config.ShortDramaConfig.primaryApiUrl
+    .split(';')
+    .map((url) => url.trim())
+    .filter(Boolean);
+  if (!urls.length) throw new Error('短剧 API 未配置');
   // 服务端使用外部API的完整路径
   return urls[0];
 };
@@ -27,7 +23,10 @@ const getSearchUrls = async () => {
   if (typeof window === 'undefined') {
     const { loadConfig } = await import('@/lib/config');
     const config = await loadConfig();
-    const urls = config.ShortDramaConfig.primaryApiUrl.split(';');
+    const urls = config.ShortDramaConfig.primaryApiUrl
+      .split(';')
+      .map((url) => url.trim())
+      .filter(Boolean);
     // 服务端使用外部API的完整路径
     return urls;
   }
@@ -52,11 +51,6 @@ const getEpisodeCount = (item: any) => {
 };
 
 const getShortDramaCategoryId = async (baseUrl: string) => {
-  const cached = shortDramaCategoryIdCache.get(baseUrl);
-  if (cached !== undefined) {
-    return cached;
-  }
-
   const listUrl = `${baseUrl}?ac=list`;
 
   const listResponse = await fetch(listUrl, {
@@ -85,8 +79,6 @@ const getShortDramaCategoryId = async (baseUrl: string) => {
   }
 
   const categoryId = shortDramaCategory.type_id;
-  shortDramaCategoryIdCache.set(baseUrl, categoryId);
-
   return categoryId;
 };
 
@@ -98,47 +90,13 @@ export async function getShortDramaCategories(): Promise<ShortDramaCategory[]> {
       type_name: '全部短剧',
     },
   ];
-  // const cacheKey = getShortdramaCacheKey('categories', {});
-
-  // try {
-  //   // 检查缓存
-  //   const cached = await getCache(cacheKey);
-  //   if (cached) {
-  //     return cached;
-  //   }
-  //   // 使用内部 API 代理
-  //   const apiUrl = `${await getApiBase()}/categories`;
-  //   const response = await fetch(apiUrl);
-  //   if (!response.ok) {
-  //     throw new Error(`HTTP error! status: ${response.status}`);
-  //   }
-  //   const data = await response.json();
-  //   // 内部 API 已经处理好格式
-  //   const result: ShortDramaCategory[] = data;
-
-  //   // 只缓存非空结果，避免缓存错误/空数据
-  //   if (Array.isArray(result) && result.length > 0) {
-  //     await setCache(cacheKey, result, SHORTDRAMA_CACHE_EXPIRE.categories);
-  //   }
-  //   return result;
-  // } catch (error) {
-  //   console.error('获取短剧分类失败:', error);
-  //   return [];
-  // }
 }
 
 // 获取推荐短剧列表
 export async function getRecommendedShortDramas(
   size = 15,
 ): Promise<ShortDramaItem[]> {
-  const cacheKey = getShortdramaCacheKey('recommends', { size });
-
   try {
-    // 检查缓存
-    const cached = await getCache(cacheKey);
-    if (cached) {
-      return cached;
-    }
     let result: ShortDramaItem[];
     if (typeof window === 'undefined') {
       result = await fetchFromShortDramaSource(size);
@@ -155,13 +113,10 @@ export async function getRecommendedShortDramas(
       }
       result = await response.json();
     }
-    // 只缓存非空结果，避免缓存错误/空数据
-    if (Array.isArray(result) && result.length > 0) {
-      await setCache(cacheKey, result, SHORTDRAMA_CACHE_EXPIRE.recommends);
-    }
     return result;
   } catch (error) {
     console.error('获取推荐短剧失败:', error);
+    if (typeof window === 'undefined') throw error;
     return [];
   }
 }
@@ -212,13 +167,7 @@ export async function getShortDramaList(
   category: number,
   page = 1,
 ): Promise<{ list: ShortDramaItem[]; hasMore: boolean }> {
-  const cacheKey = getShortdramaCacheKey('lists', { category, page });
   try {
-    // 检查缓存
-    const cached = await getCache(cacheKey);
-    if (cached) {
-      return cached;
-    }
     let result: { list: []; hasMore: boolean };
     if (typeof window === 'undefined') {
       result = await fetchListFromSource(page);
@@ -231,17 +180,10 @@ export async function getShortDramaList(
       }
       result = await response.json();
     }
-    // 只缓存非空结果，避免缓存错误/空数据
-    if (result.list && Array.isArray(result.list) && result.list.length > 0) {
-      const cacheTime =
-        page === 1
-          ? SHORTDRAMA_CACHE_EXPIRE.lists * 2
-          : SHORTDRAMA_CACHE_EXPIRE.lists;
-      await setCache(cacheKey, result, cacheTime);
-    }
     return result;
   } catch (error) {
     console.error('获取短剧列表失败:', error);
+    if (typeof window === 'undefined') throw error;
     return { list: [], hasMore: false };
   }
 }
@@ -308,10 +250,12 @@ export async function searchShortDramas(
         };
       }
       const results = await Promise.allSettled(
-        urls
-          .map((url) => url.trim())
-          .map((url) => searchFromSource(url, query, page)),
+        urls.map((url) => searchFromSource(url, query, page)),
       );
+
+      if (results.every((result) => result.status === 'rejected')) {
+        throw new Error('所有短剧源搜索均失败');
+      }
 
       // 合并所有成功的结果
       const allItems: any[] = [];
@@ -351,6 +295,7 @@ export async function searchShortDramas(
     }
   } catch (error) {
     console.error('搜索短剧失败:', error);
+    if (typeof window === 'undefined') throw error;
     return { list: [], hasMore: false };
   }
 }
@@ -374,7 +319,8 @@ async function searchFromSource(url: string, query: string, page: number) {
   });
 
   if (!response.ok) {
-    return { list: [], hasMore: false };
+    await response.body?.cancel();
+    throw new Error(`HTTP error! status: ${response.status}`);
   }
 
   const data = await response.json();

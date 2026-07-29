@@ -1,231 +1,205 @@
-import crypto from 'crypto';
-import fs from 'fs';
 import { NextResponse } from 'next/server';
-import path from 'path';
-import stream from 'stream';
-import { promisify } from 'util';
 
+import {
+  conditionalResponseHeaders,
+  noStoreResponseHeaders,
+  staticMediaResponseHeaders,
+} from '@/lib/cache-system/http';
+import { imageDiskCache } from '@/lib/cache-system/media/disk';
+import {
+  createMediaEtag,
+  hasFailedPreconditions,
+  hasSensitiveMediaParams,
+  isAllowedMediaContentType,
+  isNotModified,
+  mediaBody,
+  normalizeMediaContentType,
+  readBodyWithLimit,
+} from '@/lib/cache-system/media/policy';
 import {
   fetchDoubanWithAntiScraping,
   isDoubanUrl,
 } from '@/lib/douban-challenge';
+import {
+  parseSafeHttpUrl,
+  safeFetch,
+  UnsafeUpstreamUrlError,
+} from '@/lib/safe-upstream-url';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
-
-const pipeline = promisify(stream.pipeline);
-const CACHE_DIR = path.resolve('/app/cache/image');
-
-// Ensure cache directory exists
-try {
-  if (!fs.existsSync(CACHE_DIR)) {
-    fs.mkdirSync(CACHE_DIR, { recursive: true });
-  }
-} catch (e) {
-  console.error('Failed to create image cache dir', e);
-}
 
 export const runtime = 'nodejs';
 
-// 图片代理接口 - 解决防盗链和 Mixed Content 问题
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const imageUrl = searchParams.get('url');
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
-  if (!imageUrl) {
-    return NextResponse.json({ error: 'Missing image URL' }, { status: 400 });
-  }
-
-  // URL 格式验证
-  try {
-    new URL(imageUrl);
-  } catch {
-    return NextResponse.json({ error: 'Invalid URL format' }, { status: 400 });
-  }
-
-  try {
-    // 动态设置 Referer 和 Origin（根据图片源域名）
-    const imageUrlObj = new URL(imageUrl);
-    const sourceOrigin = `${imageUrlObj.protocol}//${imageUrlObj.host}`;
-
-    // --- 本地缓存逻辑 ---
-    // 提取文件名：使用 URL 的 MD5 哈希作为文件名，避免不同分辨率(s/m/l)的文件名冲突
-    // 例如：.../photo/s/p123.jpg 和 .../photo/l/p123.jpg 如果只用 basename 都会是 p123.jpg
-    const urlPath = imageUrlObj.pathname;
-    const ext = path.extname(urlPath) || '.jpg'; // 默认 .jpg
-    const urlHash = crypto.createHash('md5').update(imageUrl).digest('hex');
-    const filename = `${urlHash}${ext}`;
-    const filePath = path.join(CACHE_DIR, filename);
-
-    if (fs.existsSync(filePath)) {
-      try {
-        console.log(`[ImageCache] HIT: ${filename}`);
-        return serveLocalFile(request, filePath);
-      } catch (e) {
-        console.error('[ImageCache] Error serving local file:', e);
-        throw e;
-      }
-    } else {
-      console.log(`[ImageCache] MISS: ${filename}`);
-      const downloadHeaders = {
-        Referer: sourceOrigin + '/',
-        'User-Agent': DEFAULT_USER_AGENT,
-      };
-      const result = await downloadToCache(imageUrl, filePath, downloadHeaders);
-      if (result) {
-        try {
-          console.log(`[ImageCache] HIT: ${filename}`);
-          return serveLocalFile(request, filePath);
-        } catch (e) {
-          console.error('[ImageCache] Error serving local file:', e);
-          throw e;
-        }
-      } else {
-        const errorResponse = NextResponse.json(
-          {
-            error: 'Failed to fetch image',
-            status: 500,
-          },
-          { status: 500 },
-        );
-        errorResponse.headers.set(
-          'Cache-Control',
-          'no-cache, no-store, must-revalidate',
-        );
-        return errorResponse;
-      }
-    }
-  } catch (error: any) {
-    // 错误类型判断
-    if (error.name === 'AbortError') {
-      return NextResponse.json(
-        { error: 'Image fetch timeout (15s)' },
-        { status: 504 },
-      );
-    }
-    return NextResponse.json(
-      { error: 'Error fetching image', details: error.message },
-      { status: 500 },
-    );
+class ImageProxyError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
   }
 }
 
-// 处理 CORS 预检请求
+export async function GET(request: Request) {
+  const imageUrl = new URL(request.url).searchParams.get('url');
+  if (!imageUrl) return errorResponse('Missing image URL', 400);
+
+  let parsed: URL;
+  try {
+    parsed = parseSafeHttpUrl(imageUrl);
+  } catch (error) {
+    return errorResponse(
+      error instanceof Error ? error.message : 'Invalid image URL',
+      400,
+    );
+  }
+
+  try {
+    if (hasSensitiveMediaParams(parsed)) {
+      const payload = await fetchImage(parsed);
+      let headers = noStoreResponseHeaders({
+        'Content-Type': payload.contentType,
+        'Content-Length': String(payload.data.byteLength),
+        'Access-Control-Allow-Origin': '*',
+        'X-Cache-Status': 'BYPASS',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      const metadata = {
+        etag: payload.etag || createMediaEtag(payload.data),
+        lastModified: payload.lastModified,
+      };
+      headers = conditionalResponseHeaders(metadata, headers);
+      if (hasFailedPreconditions(request, metadata)) {
+        headers.delete('Content-Length');
+        return new Response(null, { status: 412, headers });
+      }
+      if (isNotModified(request, metadata)) {
+        headers.delete('Content-Length');
+        return new Response(null, { status: 304, headers });
+      }
+      return new Response(mediaBody(payload.data), { status: 200, headers });
+    }
+
+    const object = await imageDiskCache.getOrCreate(
+      parsed.toString(),
+      'original',
+      () => fetchImage(parsed),
+    );
+
+    let headers = staticMediaResponseHeaders(
+      {
+        contentAddressed: false,
+        ttlSeconds: remainingTtlSeconds(object.metadata.expiresAt),
+      },
+      {
+        'Content-Type': object.metadata.contentType,
+        'Content-Length': String(object.metadata.size),
+        'Access-Control-Allow-Origin': '*',
+        'X-Cache-Status': object.status,
+        'X-Content-Type-Options': 'nosniff',
+      },
+    );
+    headers = conditionalResponseHeaders(
+      {
+        etag: object.metadata.etag,
+        lastModified: object.metadata.lastModified,
+      },
+      headers,
+    );
+    if (hasFailedPreconditions(request, object.metadata)) {
+      const failureHeaders = noStoreResponseHeaders(headers);
+      failureHeaders.delete('Content-Length');
+      return new Response(null, { status: 412, headers: failureHeaders });
+    }
+    if (isNotModified(request, object.metadata)) {
+      headers.delete('Content-Length');
+      return new Response(null, { status: 304, headers });
+    }
+    return new Response(mediaBody(object.data), { status: 200, headers });
+  } catch (error) {
+    if (error instanceof ImageProxyError) {
+      return errorResponse(error.message, error.status);
+    }
+    if (error instanceof UnsafeUpstreamUrlError) {
+      return errorResponse(error.message, 400);
+    }
+    if (error instanceof Error && error.name === 'AbortError') {
+      return errorResponse('Image fetch timed out', 504);
+    }
+    return errorResponse('Failed to fetch image', 502);
+  }
+}
+
+async function fetchImage(parsed: URL) {
+  const headers = {
+    Referer: `${parsed.origin}/`,
+    'User-Agent': DEFAULT_USER_AGENT,
+    Accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif',
+  };
+  const response = isDoubanUrl(parsed.toString())
+    ? await fetchDoubanWithAntiScraping(parsed.toString(), {
+        timeoutMs: 15_000,
+        headers,
+      })
+    : await safeFetch(parsed.toString(), {
+        maxRedirects: 5,
+        signal: AbortSignal.timeout(15_000),
+        headers,
+      });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new ImageProxyError(
+      `Image upstream returned ${response.status}`,
+      response.status,
+    );
+  }
+  const contentType = response.headers.get('content-type');
+  if (!isAllowedMediaContentType('image', contentType)) {
+    await response.body?.cancel();
+    throw new ImageProxyError('Unsupported image content type', 415);
+  }
+  const declaredSize = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredSize) && declaredSize > MAX_IMAGE_BYTES) {
+    await response.body?.cancel();
+    throw new ImageProxyError('Image is too large', 413);
+  }
+  let data: Uint8Array;
+  try {
+    data = await readBodyWithLimit(response, MAX_IMAGE_BYTES);
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw new ImageProxyError('Image is too large', 413);
+    }
+    throw error;
+  }
+  if (!data.byteLength) throw new ImageProxyError('Image is empty', 502);
+  return {
+    data,
+    contentType: normalizeMediaContentType(contentType),
+    etag: response.headers.get('etag') || undefined,
+    lastModified: response.headers.get('last-modified') || undefined,
+  };
+}
+
 export async function OPTIONS() {
   return new NextResponse(null, {
     status: 204,
-    headers: {
+    headers: noStoreResponseHeaders({
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    },
+      'Access-Control-Allow-Headers':
+        'Content-Type, If-Match, If-None-Match, If-Modified-Since, If-Unmodified-Since',
+    }),
   });
 }
 
-// 辅助函数：后台下载图片到缓存
-async function downloadToCache(url: string, filePath: string, headers: any) {
-  const tempPath = `${filePath}.tmp`;
-  try {
-    const controller = new AbortController();
-    let response: Response;
-    if (isDoubanUrl(url)) {
-      response = await fetchDoubanWithAntiScraping(url, {
-        signal: controller.signal,
-        timeoutMs: 10000,
-      });
-    } else {
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-      response = await fetch(url, {
-        headers,
-        signal: controller.signal,
-      }).finally(() => {
-        clearTimeout(timeoutId);
-      });
-    }
-    if (!response.ok || !response.body) {
-      console.error(
-        `[ImageCache] Failed to fetch source: ${response.status}, url = ${url}`,
-      );
-      return false;
-    }
-
-    const fileStream = fs.createWriteStream(tempPath);
-    // @ts-ignore
-    const reader = stream.Readable.fromWeb(response.body);
-    await pipeline(reader, fileStream);
-
-    fileStream.close();
-
-    // 简单的重试机制
-    let retries = 3;
-    while (retries > 0) {
-      try {
-        await fs.promises.rename(tempPath, filePath);
-        console.log(`[ImageCache] Successfully cached: ${filePath}`);
-        break;
-      } catch (e: any) {
-        if (e.code === 'EBUSY' || e.code === 'EPERM') {
-          retries--;
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        } else {
-          return false;
-        }
-      }
-    }
-  } catch (error) {
-    console.error(`[ImageCache] Download error: url = ${url}`, error);
-    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-    return false;
-  }
-  return true;
+function errorResponse(message: string, status: number) {
+  return NextResponse.json(
+    { error: message },
+    { status, headers: noStoreResponseHeaders() },
+  );
 }
 
-// 辅助函数：服务本地缓存文件
-function serveLocalFile(request: Request, filePath: string) {
-  const stat = fs.statSync(filePath);
-  const fileSize = stat.size;
-  const mtime = stat.mtime.toUTCString();
-  // 使用强 ETag
-  const etag = `"${fileSize.toString(16)}-${stat.mtime.getTime().toString(16)}"`;
-
-  const ifNoneMatch = request.headers.get('if-none-match');
-  const ifModifiedSince = request.headers.get('if-modified-since');
-
-  // 检查缓存是否有效 (304 Not Modified)
-  if (ifNoneMatch === etag || ifModifiedSince === mtime) {
-    return new Response(null, {
-      status: 304,
-      headers: {
-        'Cache-Control': 'public, max-age=604800, immutable',
-        'CDN-Cache-Control': 'public, s-maxage=604800',
-        ETag: etag,
-        'Last-Modified': mtime,
-        'X-Cache-Status': 'HIT',
-        'Access-Control-Allow-Origin': '*',
-      },
-    });
-  }
-
-  const headers = new Headers();
-  // 根据扩展名猜测 Content-Type，或者直接用 image/jpeg (大部分是 jpg)
-  // 更好的做法是读取文件头或根据扩展名
-  const ext = path.extname(filePath).toLowerCase();
-  let contentType = 'image/jpeg';
-  if (ext === '.png') contentType = 'image/png';
-  else if (ext === '.gif') contentType = 'image/gif';
-  else if (ext === '.webp') contentType = 'image/webp';
-  else if (ext === '.svg') contentType = 'image/svg+xml';
-
-  headers.set('Content-Type', contentType);
-  headers.set('Content-Length', fileSize.toString());
-  headers.set('Access-Control-Allow-Origin', '*');
-  headers.set('Cache-Control', 'public, max-age=604800, immutable');
-  headers.set('CDN-Cache-Control', 'public, s-maxage=604800');
-  headers.set('X-Cache-Status', 'HIT');
-  headers.set('ETag', etag);
-  headers.set('Last-Modified', mtime);
-
-  const fileStream = fs.createReadStream(filePath);
-  // @ts-ignore
-  const webStream = stream.Readable.toWeb(fileStream);
-
-  return new Response(webStream as any, { status: 200, headers });
+function remainingTtlSeconds(expiresAt: number): number {
+  return Math.max(0, Math.ceil((expiresAt - Date.now()) / 1_000));
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 
@@ -100,9 +101,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { success: true },
       {
-        headers: {
-          'Cache-Control': 'no-store', // 不缓存结果
-        },
+        headers: noStoreResponseHeaders(),
       },
     );
   } catch (error) {
