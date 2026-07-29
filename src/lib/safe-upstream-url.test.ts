@@ -6,6 +6,7 @@ import {
   isBlockedIpAddress,
   isExecutableDocumentContentType,
   parseSafeHttpUrl,
+  withResponseHeadersTimeout,
 } from './safe-upstream-url.ts';
 
 test('blocks private, reserved and metadata addresses', () => {
@@ -58,4 +59,40 @@ test('detects executable document response types', () => {
   );
   assert.equal(isExecutableDocumentContentType('image/svg+xml'), true);
   assert.equal(isExecutableDocumentContentType('video/mp4'), false);
+});
+
+test('aborts an upstream operation that does not return headers in time', async () => {
+  await assert.rejects(
+    withResponseHeadersTimeout(
+      (signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+      10,
+    ),
+    (error: Error) => error.name === 'AbortError',
+  );
+});
+
+test('does not abort a streamed body after response headers arrive', async () => {
+  const response = await withResponseHeadersTimeout(async (signal) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        signal.addEventListener(
+          'abort',
+          () => controller.error(signal.reason),
+          { once: true },
+        );
+        setTimeout(() => {
+          controller.enqueue(new TextEncoder().encode('stream completed'));
+          controller.close();
+        }, 25);
+      },
+    });
+    return new Response(body);
+  }, 10);
+
+  assert.equal(await response.text(), 'stream completed');
 });

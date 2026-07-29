@@ -6,7 +6,7 @@ import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
 import { getBaseUrl, isConfiguredLiveChannelUrl, resolveUrl } from '@/lib/live';
 import {
-  createSignedMediaProxyUrl,
+  createSignedMediaProxyPath,
   type MediaSignatureScope,
   verifyMediaUrlSignature,
 } from '@/lib/media-signature';
@@ -478,13 +478,14 @@ function processDefineVariables(
 }
 
 function buildSignedProxyUrl(
-  proxyBase: string,
+  _proxyBase: string,
   scope: MediaSignatureScope,
   targetUrl: string,
   sourceKey: string,
 ) {
-  return createSignedMediaProxyUrl({
-    origin: new URL(proxyBase).origin,
+  // Keep rewritten HLS resources same-origin without embedding the server's
+  // internal bind address (for example 0.0.0.0:3000) in the playlist.
+  return createSignedMediaProxyPath({
     scope,
     source: sourceKey,
     targetUrl,

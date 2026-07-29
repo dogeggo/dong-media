@@ -282,6 +282,38 @@ export interface SafeFetchOptions extends RequestInit {
   maxRedirects?: number;
 }
 
+/**
+ * Limits how long an upstream request may take to return its response headers.
+ *
+ * The timer is cleared as soon as the operation resolves. This distinction is
+ * important for callers that return the response body as a stream: using
+ * `AbortSignal.timeout()` directly would also abort that body when the timer
+ * expires, even though the upstream connection was established successfully.
+ * An optional caller signal remains active after the headers arrive so client
+ * disconnects can still cancel the streamed body.
+ */
+export async function withResponseHeadersTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  callerSignal?: AbortSignal,
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError('Response headers timeout must be positive');
+  }
+
+  const timeoutController = new AbortController();
+  const signal = callerSignal
+    ? AbortSignal.any([callerSignal, timeoutController.signal])
+    : timeoutController.signal;
+  const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+
+  try {
+    return await operation(signal);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export async function safeFetch(input: string, options: SafeFetchOptions = {}) {
   const { allowedHosts, maxRedirects = 5, ...requestOptions } = options;
   let currentUrl = parseSafeHttpUrl(input, allowedHosts);

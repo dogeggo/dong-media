@@ -22,6 +22,7 @@ import {
   subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { getDoubanComments, getDoubanDetails } from '@/lib/douban-api';
+import { matchesRequestedYear } from '@/lib/play-source-matching';
 import { PlayRecord, SearchResult } from '@/lib/types';
 import { generateSearchVariants } from '@/lib/utils';
 import { getVideoResolutionFromM3u8 } from '@/lib/utils';
@@ -2257,10 +2258,10 @@ function PlayPageClient() {
           const titleMatch =
             resultTitle === queryTitle ||
             searchVariants.some((v) => v.toLowerCase() === resultTitle);
-          const vYear = Number(videoYearRef.current);
-          const rYear = Number(result.year);
-          const yearMatch =
-            Number.isNaN(vYear) || Number.isNaN(rYear) ? true : vYear === rYear;
+          const yearMatch = matchesRequestedYear(
+            videoYearRef.current,
+            result.year,
+          );
           const typeMatch = searchType
             ? (searchType === 'tv' && result.episodes.length > 1) ||
               (searchType === 'movie' && result.episodes.length === 1) ||
@@ -2290,12 +2291,10 @@ function PlayPageClient() {
                   // 避免短标题（如"玫瑰"2字）被拆分匹配
                   (queryTitle.length > 4 &&
                     checkAllKeywordsMatch(queryTitle, resultTitle));
-                const vYear = Number(videoYearRef.current);
-                const rYear = Number(result.year);
-                const yearMatch =
-                  Number.isNaN(vYear) || Number.isNaN(rYear)
-                    ? true
-                    : vYear === rYear;
+                const yearMatch = matchesRequestedYear(
+                  videoYearRef.current,
+                  result.year,
+                );
                 const typeMatch = searchType
                   ? (searchType === 'tv' && result.episodes.length > 1) ||
                     (searchType === 'movie' && result.episodes.length === 1) ||

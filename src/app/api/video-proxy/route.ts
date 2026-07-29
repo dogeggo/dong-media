@@ -27,6 +27,7 @@ import {
   parseSafeHttpUrl,
   safeFetch,
   UnsafeUpstreamUrlError,
+  withResponseHeadersTimeout,
 } from '@/lib/safe-upstream-url';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
@@ -305,11 +306,16 @@ async function proxyUpstreamVideo(
   const headers = upstreamHeaders(url);
   if (range) headers.set('Range', range);
   copyConditionalRequestHeaders(request, headers, Boolean(range));
-  const response = await safeFetch(url, {
-    maxRedirects: 5,
-    signal: AbortSignal.timeout(30_000),
-    headers,
-  });
+  const response = await withResponseHeadersTimeout(
+    (signal) =>
+      safeFetch(url, {
+        maxRedirects: 5,
+        signal,
+        headers,
+      }),
+    30_000,
+    request.signal,
+  );
   if (response.status === 304) {
     let responseHeaders = cacheable
       ? staticMediaResponseHeaders(

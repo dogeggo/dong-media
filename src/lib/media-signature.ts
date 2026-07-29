@@ -5,6 +5,13 @@ const MAX_FUTURE_MS = DEFAULT_LIFETIME_MS + 5 * 60 * 1000;
 
 export type MediaSignatureScope = 'm3u8' | 'segment' | 'key';
 
+type SignedMediaProxyOptions = {
+  scope: MediaSignatureScope;
+  source: string;
+  targetUrl: string;
+  lifetimeMs?: number;
+};
+
 function getSigningSecret(): string {
   const secret = process.env.MEDIA_PROXY_SECRET || process.env.PASSWORD;
   if (!secret) {
@@ -65,13 +72,7 @@ export function verifyMediaUrlSignature(options: {
   );
 }
 
-export function createSignedMediaProxyUrl(options: {
-  origin: string;
-  scope: MediaSignatureScope;
-  source: string;
-  targetUrl: string;
-  lifetimeMs?: number;
-}) {
+export function createSignedMediaProxyPath(options: SignedMediaProxyOptions) {
   const expires = Date.now() + (options.lifetimeMs || DEFAULT_LIFETIME_MS);
   const { signature } = signMediaUrl(
     options.scope,
@@ -79,10 +80,22 @@ export function createSignedMediaProxyUrl(options: {
     options.targetUrl,
     expires,
   );
-  const proxyUrl = new URL(`/api/proxy/${options.scope}`, options.origin);
+  const proxyUrl = new URL(
+    `/api/proxy/${options.scope}`,
+    'http://media-proxy.invalid',
+  );
   proxyUrl.searchParams.set('url', options.targetUrl);
   proxyUrl.searchParams.set('moontv-source', options.source);
   proxyUrl.searchParams.set('expires', String(expires));
   proxyUrl.searchParams.set('signature', signature);
-  return proxyUrl.toString();
+  return `${proxyUrl.pathname}${proxyUrl.search}`;
+}
+
+export function createSignedMediaProxyUrl(
+  options: SignedMediaProxyOptions & { origin: string },
+) {
+  return new URL(
+    createSignedMediaProxyPath(options),
+    options.origin,
+  ).toString();
 }
