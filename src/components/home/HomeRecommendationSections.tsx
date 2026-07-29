@@ -56,6 +56,49 @@ function LoadingCards() {
   return SKELETON_ITEMS.map((index) => <SkeletonCard key={index} />);
 }
 
+function UpcomingLoadingSection() {
+  const filterPlaceholders = [
+    { key: 'all', width: 72 },
+    { key: 'movie', width: 72 },
+    { key: 'tv', width: 88 },
+  ];
+
+  return (
+    <section
+      aria-busy='true'
+      className='mb-2 sm:mb-8'
+      data-upcoming-placeholder='true'
+    >
+      <div className='mb-4 flex items-center justify-between'>
+        <SectionTitle
+          title='即将上映'
+          icon={Calendar}
+          iconColor='text-orange-500'
+        />
+        <Link
+          href='/release-calendar'
+          className='flex items-center text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+        >
+          查看更多
+          <ChevronRight className='ml-1 h-4 w-4' />
+        </Link>
+      </div>
+
+      <div aria-hidden='true' className='mb-4 flex gap-2'>
+        {filterPlaceholders.map(({ key, width }) => (
+          <div
+            key={key}
+            className='h-9 animate-pulse rounded-lg bg-gray-200 motion-reduce:animate-none dark:bg-gray-800'
+            style={{ width }}
+          />
+        ))}
+      </div>
+
+      <ScrollableRow>{LoadingCards()}</ScrollableRow>
+    </section>
+  );
+}
+
 const UpcomingSection = memo(function UpcomingSection({
   filter,
   onFilterChange,
@@ -403,20 +446,14 @@ function HomeRecommendationSections({
   return (
     <>
       {loading.upcoming ? (
-        <div
-          aria-hidden='true'
-          className={`${SECTION_PLACEHOLDER} w-full`}
-          data-upcoming-placeholder='true'
-        />
+        <UpcomingLoadingSection />
       ) : upcomingReleases.length > 0 ? (
-        <DeferredSection placeholderClassName={SECTION_PLACEHOLDER}>
-          <UpcomingSection
-            releases={upcomingReleases}
-            filter={upcomingFilter}
-            onFilterChange={onUpcomingFilterChange}
-            today={today}
-          />
-        </DeferredSection>
+        <UpcomingSection
+          releases={upcomingReleases}
+          filter={upcomingFilter}
+          onFilterChange={onUpcomingFilterChange}
+          today={today}
+        />
       ) : null}
 
       <DeferredSection placeholderClassName={SECTION_PLACEHOLDER}>

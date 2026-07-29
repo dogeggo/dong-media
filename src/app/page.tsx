@@ -80,7 +80,7 @@ type HomeAction =
   | { type: 'SET_HOT_ANIME'; payload: DoubanMovieDetail[] }
   | { type: 'SET_HOT_SHORT_DRAMAS'; payload: ShortDramaItem[] }
   | { type: 'SET_BANGUMI_CALENDAR_DATA'; payload: BangumiCalendarData[] }
-  | { type: 'SET_UPCOMING_RELEASES'; payload: ReleaseCalendarItem[] }
+  | { type: 'COMPLETE_UPCOMING_LOAD'; payload: ReleaseCalendarItem[] }
   | { type: 'SET_LOADING'; payload: Partial<HomeState['loading']> }
   | { type: 'SET_SHORT_DRAMAS_ERROR'; payload: boolean }
   | { type: 'SET_USERNAME'; payload: string }
@@ -122,8 +122,12 @@ const homeReducer = (state: HomeState, action: HomeAction): HomeState => {
       return { ...state, hotShortDramas: action.payload };
     case 'SET_BANGUMI_CALENDAR_DATA':
       return { ...state, bangumiCalendarData: action.payload };
-    case 'SET_UPCOMING_RELEASES':
-      return { ...state, upcomingReleases: action.payload };
+    case 'COMPLETE_UPCOMING_LOAD':
+      return {
+        ...state,
+        upcomingReleases: action.payload,
+        loading: { ...state.loading, upcoming: false },
+      };
     case 'SET_LOADING':
       return { ...state, loading: { ...state.loading, ...action.payload } };
     case 'SET_SHORT_DRAMAS_ERROR':
@@ -717,60 +721,77 @@ function HomeClient() {
     };
 
     const loadUpcoming = async () => {
+      let worker: Worker | null = null;
+
+      const complete = (items: ReleaseCalendarItem[]) => {
+        if (!cancelled) {
+          dispatchDeferred({
+            type: 'COMPLETE_UPCOMING_LOAD',
+            payload: items,
+          });
+        }
+      };
+
       try {
         const response = await fetch('/api/release-calendar?limit=100');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
-        if (cancelled || !Array.isArray(data?.items)) return;
+        if (cancelled) return;
+        if (!Array.isArray(data?.items)) {
+          throw new Error('响应数据格式错误');
+        }
 
-        workerRef.current = new Worker(
+        worker = new Worker(
           new URL('../lib/release-calendar-worker.ts', import.meta.url),
         );
-        workerRef.current.onmessage = (event: MessageEvent) => {
-          if (cancelled) return;
-          const { selectedItems, error } = event.data;
-          dispatchDeferred({
-            type: 'SET_UPCOMING_RELEASES',
-            payload: error ? [] : selectedItems,
-          });
-        };
-        workerRef.current.onerror = () => {
-          if (!cancelled) {
-            dispatchDeferred({ type: 'SET_UPCOMING_RELEASES', payload: [] });
+        workerRef.current = worker;
+
+        let settled = false;
+        const finishWorker = (items: ReleaseCalendarItem[]) => {
+          if (settled) return;
+          settled = true;
+          worker?.terminate();
+          if (workerRef.current === worker) {
+            workerRef.current = null;
           }
+          complete(items);
         };
+
+        worker.onmessage = (event: MessageEvent) => {
+          const { selectedItems, error } = event.data as {
+            selectedItems?: ReleaseCalendarItem[];
+            error?: unknown;
+          };
+          finishWorker(
+            !error && Array.isArray(selectedItems) ? selectedItems : [],
+          );
+        };
+        worker.onerror = () => finishWorker([]);
 
         const currentDate = new Date();
         currentDate.setHours(0, 0, 0, 0);
-        workerRef.current.postMessage({
+        worker.postMessage({
           releases: data.items,
           today: currentDate.toISOString().split('T')[0],
         });
       } catch (error) {
+        worker?.terminate();
+        if (workerRef.current === worker) {
+          workerRef.current = null;
+        }
         console.warn('获取即将上映数据失败:', error);
-        if (!cancelled) {
-          dispatchDeferred({ type: 'SET_UPCOMING_RELEASES', payload: [] });
-        }
-      } finally {
-        if (!cancelled) {
-          dispatchDeferred({
-            type: 'SET_LOADING',
-            payload: { upcoming: false },
-          });
-        }
+        complete([]);
       }
     };
 
-    // Hero 所需的两路请求立即开始；其余分区延迟并分批执行，避免弱网下
+    // Hero 和首个推荐区所需的请求立即开始；其余分区延迟并分批执行，避免
     // 七路列表和详情请求同时争抢连接、连续触发主线程更新。
-    void Promise.allSettled([loadMovies(), loadTvShows()]);
+    void Promise.allSettled([loadMovies(), loadTvShows(), loadUpcoming()]);
     scheduleAfter(
       async () => {
         await Promise.allSettled([loadVarietyShows(), loadAnime()]);
         if (cancelled) return;
         await Promise.allSettled([loadShortDramas(), loadBangumi()]);
-        if (cancelled) return;
-        await loadUpcoming();
       },
       isConstrainedNetwork ? 3000 : 1200,
       3000,
