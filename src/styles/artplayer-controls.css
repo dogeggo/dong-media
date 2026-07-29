@@ -19,19 +19,7 @@
     padding: 3px;
   }
 
-  /* 扩展hover检测区域，避免鼠标移动到面板时消失 */
-  .art-control-volume::before {
-    content: '';
-    position: absolute;
-    top: -20px;
-    left: -5px;
-    right: -5px;
-    bottom: -3px;
-    z-index: -1;
-    pointer-events: auto;
-  }
-
-  /* 按钮或面板hover时显示音量面板 */
+  /* 仅按钮和音量面板自身触发，避免透明区域侵入上方进度条 */
   .art-control-volume:hover .art-volume-panel,
   .art-volume-panel:hover {
     opacity: 1 !important;
