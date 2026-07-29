@@ -6,8 +6,6 @@ import { useState } from 'react';
 interface TVBoxTokenManagerProps {
   username: string;
   tvboxToken?: string;
-  tvboxEnabledSources?: string[];
-  allSources: Array<{ key: string; name: string }>;
   onUpdate: () => void;
 }
 
@@ -49,20 +47,16 @@ export function TVBoxTokenCell({ tvboxToken }: { tvboxToken?: string }) {
 export function TVBoxTokenModal({
   username,
   tvboxToken,
-  tvboxEnabledSources = [],
-  allSources,
   onClose,
   onUpdate,
 }: TVBoxTokenManagerProps & { onClose: () => void }) {
-  const [selectedSources, setSelectedSources] =
-    useState<string[]>(tvboxEnabledSources);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{
     type: 'success' | 'error';
     text: string;
   } | null>(null);
 
-  const handleSave = async (regenerate = false) => {
+  const handleRegenerate = async () => {
     setIsSaving(true);
     setMessage(null);
 
@@ -72,8 +66,7 @@ export function TVBoxTokenModal({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username,
-          tvboxEnabledSources: selectedSources,
-          regenerateToken: regenerate,
+          regenerateToken: true,
         }),
       });
 
@@ -84,7 +77,7 @@ export function TVBoxTokenModal({
 
       setMessage({
         type: 'success',
-        text: regenerate ? 'Token已重新生成' : '配置已保存',
+        text: tvboxToken ? 'Token已重新生成' : 'Token已生成',
       });
       setTimeout(() => {
         onUpdate();
@@ -95,53 +88,6 @@ export function TVBoxTokenModal({
     } finally {
       setIsSaving(false);
     }
-  };
-
-  const handleDelete = async () => {
-    if (!confirm(`确定要删除用户 ${username} 的 TVBox Token 吗？`)) return;
-
-    setIsSaving(true);
-    setMessage(null);
-
-    try {
-      const response = await fetch(
-        `/api/admin/user-tvbox-token?username=${encodeURIComponent(username)}`,
-        {
-          method: 'DELETE',
-        },
-      );
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || '删除失败');
-      }
-
-      setMessage({ type: 'success', text: 'Token已删除' });
-      setTimeout(() => {
-        onUpdate();
-        onClose();
-      }, 1500);
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || '删除失败' });
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const toggleSource = (sourceKey: string) => {
-    setSelectedSources((prev) =>
-      prev.includes(sourceKey)
-        ? prev.filter((k) => k !== sourceKey)
-        : [...prev, sourceKey],
-    );
-  };
-
-  const toggleAll = () => {
-    setSelectedSources(
-      selectedSources.length === allSources.length
-        ? []
-        : allSources.map((s) => s.key),
-    );
   };
 
   return (
@@ -194,58 +140,14 @@ export function TVBoxTokenModal({
             )}
           </div>
 
-          {/* 源权限设置 */}
-          <div className='space-y-3'>
-            <div className='flex items-center justify-between'>
-              <label className='block text-sm font-medium text-gray-700 dark:text-gray-300'>
-                可访问的源 ({selectedSources.length}/{allSources.length})
-              </label>
-              <button
-                onClick={toggleAll}
-                className='text-xs text-primary-600 hover:text-primary-700'
-              >
-                {selectedSources.length === allSources.length
-                  ? '取消全选'
-                  : '全选'}
-              </button>
-            </div>
-            <div className='text-xs text-gray-500 dark:text-gray-400'>
-              留空表示可以访问所有源
-            </div>
-            <div className='border border-gray-200 dark:border-gray-700 rounded-lg max-h-60 overflow-y-auto'>
-              {allSources.map((source) => (
-                <label
-                  key={source.key}
-                  className='flex items-center p-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-700 last:border-0'
-                >
-                  <input
-                    type='checkbox'
-                    checked={selectedSources.includes(source.key)}
-                    onChange={() => toggleSource(source.key)}
-                    className='w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500'
-                  />
-                  <span className='ml-3 text-sm text-gray-900 dark:text-gray-100'>
-                    {source.name} ({source.key})
-                  </span>
-                </label>
-              ))}
-            </div>
+          <div className='p-3 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 rounded-lg text-sm'>
+            TVBox
+            可访问源与该账号的站内源权限完全一致。请在用户列表的“采集源权限”或“用户组”中调整。
           </div>
         </div>
 
         {/* 底部操作按钮 */}
-        <div className='flex items-center justify-between p-6 border-t border-gray-200 dark:border-gray-700'>
-          <div className='space-x-2'>
-            {tvboxToken && (
-              <button
-                onClick={handleDelete}
-                disabled={isSaving}
-                className='px-4 py-2 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg disabled:opacity-50'
-              >
-                删除Token
-              </button>
-            )}
-          </div>
+        <div className='flex items-center justify-end p-6 border-t border-gray-200 dark:border-gray-700'>
           <div className='flex items-center space-x-2'>
             <button
               onClick={onClose}
@@ -255,19 +157,12 @@ export function TVBoxTokenModal({
               取消
             </button>
             <button
-              onClick={() => handleSave(true)}
+              onClick={handleRegenerate}
               disabled={isSaving}
               className='px-4 py-2 text-sm bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 hover:bg-primary-200 dark:hover:bg-primary-800 rounded-lg disabled:opacity-50 flex items-center space-x-1'
             >
               <Settings className='w-4 h-4' />
               <span>{tvboxToken ? '重新生成' : '生成Token'}</span>
-            </button>
-            <button
-              onClick={() => handleSave(false)}
-              disabled={isSaving}
-              className='px-4 py-2 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg disabled:opacity-50'
-            >
-              {isSaving ? '保存中...' : '保存配置'}
             </button>
           </div>
         </div>

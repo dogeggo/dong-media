@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { privateResponseHeaders } from '@/lib/cache-system';
+import { getAvailableApiSites } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
 import { authenticateRequest } from '@/lib/request-auth';
 import { rankSearchResults } from '@/lib/search-ranking';
@@ -55,19 +56,6 @@ export async function GET(request: NextRequest) {
     }
 
     const config = auth.config;
-    const currentUser = config.UserConfig.Users.find(
-      (candidate) => candidate.username === auth.username,
-    );
-    if (
-      auth.via === 'tvbox-token' &&
-      currentUser?.tvboxEnabledSources?.length &&
-      !currentUser.tvboxEnabledSources.includes(sourceKey)
-    ) {
-      return NextResponse.json(
-        { code: 403, msg: '该 Token 无权访问此视频源', list: [] },
-        { status: 403 },
-      );
-    }
     // const shouldFilter = filterParam === 'on' || filterParam === 'enable';
     const shouldFilter = true;
 
@@ -92,6 +80,15 @@ export async function GET(request: NextRequest) {
           msg: `视频源已被禁用: ${sourceKey}`,
           list: [],
         },
+        { status: 403 },
+      );
+    }
+
+    // TVBox Token 和网页登录会话都使用账号的统一源权限。
+    const availableSources = await getAvailableApiSites(auth.username);
+    if (!availableSources.some((source) => source.key === sourceKey)) {
+      return NextResponse.json(
+        { code: 403, msg: '当前账号无权访问此视频源', list: [] },
         { status: 403 },
       );
     }

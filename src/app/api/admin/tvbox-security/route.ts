@@ -31,13 +31,6 @@ export async function POST(request: NextRequest) {
     const tvboxSecurityConfig = await request.json();
 
     // 验证配置数据
-    if (typeof tvboxSecurityConfig.enableAuth !== 'boolean') {
-      return NextResponse.json(
-        { error: 'Invalid enableAuth value' },
-        { status: 400 },
-      );
-    }
-
     if (typeof tvboxSecurityConfig.enableIpWhitelist !== 'boolean') {
       return NextResponse.json(
         { error: 'Invalid enableIpWhitelist value' },
@@ -50,22 +43,6 @@ export async function POST(request: NextRequest) {
         { error: 'Invalid enableRateLimit value' },
         { status: 400 },
       );
-    }
-
-    // 验证Token
-    if (tvboxSecurityConfig.enableAuth) {
-      if (
-        !tvboxSecurityConfig.token ||
-        typeof tvboxSecurityConfig.token !== 'string'
-      ) {
-        return NextResponse.json({ error: 'Token不能为空' }, { status: 400 });
-      }
-      if (tvboxSecurityConfig.token.length < 8) {
-        return NextResponse.json(
-          { error: 'Token长度至少8位' },
-          { status: 400 },
-        );
-      }
     }
 
     // 验证IP白名单
@@ -115,8 +92,6 @@ export async function POST(request: NextRequest) {
 
     // 更新TVBox安全配置
     adminConfig.TVBoxSecurityConfig = {
-      enableAuth: tvboxSecurityConfig.enableAuth,
-      token: tvboxSecurityConfig.token?.trim() || '',
       enableIpWhitelist: tvboxSecurityConfig.enableIpWhitelist,
       allowedIPs: tvboxSecurityConfig.allowedIPs || [],
       enableRateLimit: tvboxSecurityConfig.enableRateLimit,

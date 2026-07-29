@@ -44,6 +44,10 @@ import { createPortal } from 'react-dom';
 
 import { AdminConfig, AdminConfigResult } from '@/lib/admin.types';
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
+import {
+  getAllowedSourceKeys,
+  getEffectiveUserTags,
+} from '@/lib/source-permissions';
 
 import CacheManager from '@/components/CacheManager';
 import CustomAdFilterConfig from '@/components/CustomAdFilterConfig';
@@ -453,11 +457,7 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
   const [tvboxTokenUser, setTVBoxTokenUser] = useState<{
     username: string;
     tvboxToken?: string;
-    tvboxEnabledSources?: string[];
   } | null>(null);
-  const [selectedTVBoxSources, setSelectedTVBoxSources] = useState<string[]>(
-    [],
-  );
 
   // 当前登录用户名
   const currentUsername = getAuthInfoFromBrowserCookie()?.username || null;
@@ -751,24 +751,7 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
   }) => {
     setSelectedUser(user);
 
-    // 计算用户的所有有效 API（个人 + 用户组）
-    const userApis = user.enabledApis || [];
-    const tagApis: string[] = [];
-
-    // 从用户组获取 API 权限
-    if (user.tags && user.tags.length > 0) {
-      user.tags.forEach((tagName) => {
-        const tag = config.UserConfig.Tags?.find((t) => t.name === tagName);
-        if (tag && tag.enabledApis) {
-          tagApis.push(...tag.enabledApis);
-        }
-      });
-    }
-
-    // 合并去重
-    const allApis = [...new Set([...userApis, ...tagApis])];
-
-    setSelectedApis(allApis);
+    setSelectedApis(getAllowedSourceKeys(config, user) || []);
     setSelectedShowAdultContent(user.showAdultContent || false);
     setShowConfigureApisModal(true);
   };
@@ -1211,7 +1194,7 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                   默认用户组
                 </div>
                 <div className='text-sm text-gray-600 dark:text-gray-400'>
-                  新注册用户将自动加入以下分组（不选择则默认无限制访问所有源）
+                  未显式分组的普通用户（包括新注册用户）自动使用以下分组；不选择则不限制源
                 </div>
               </div>
 
@@ -1313,7 +1296,7 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                   <div className='mt-3 p-2 bg-primary-50 dark:bg-primary-900/20 rounded-md border border-primary-200 dark:border-primary-800'>
                     <div className='text-xs text-primary-700 dark:text-primary-300'>
                       💡 已选择 {config.SiteConfig.DefaultUserTags.length}{' '}
-                      个默认分组，新用户将获得这些分组的权限并集
+                      个默认分组，未显式分组的普通用户将获得这些分组的权限并集
                     </div>
                   </div>
                 )}
@@ -1557,7 +1540,7 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                   }
                   className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent'
                 >
-                  <option value=''>无用户组（无限制）</option>
+                  <option value=''>使用默认用户组</option>
                   {userGroups.map((group) => (
                     <option key={group.name} value={group.name}>
                       {group.name} (
@@ -1846,7 +1829,9 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                             <span className='text-sm text-gray-900 dark:text-gray-100'>
                               {user.tags && user.tags.length > 0
                                 ? user.tags.join(', ')
-                                : '无用户组'}
+                                : getEffectiveUserTags(config, user).length > 0
+                                  ? `默认：${getEffectiveUserTags(config, user).join(', ')}`
+                                  : '无用户组'}
                             </span>
                             {/* 配置用户组按钮 */}
                             {(role === 'owner' ||
@@ -1866,29 +1851,13 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                           <div className='flex items-center space-x-2'>
                             <span className='text-sm text-gray-900 dark:text-gray-100'>
                               {(() => {
-                                // 计算用户的有效 API 权限
-                                const userApis = user.enabledApis || [];
-                                const tagApis: string[] = [];
+                                const allowedSourceKeys = getAllowedSourceKeys(
+                                  config,
+                                  user,
+                                );
 
-                                // 从用户组获取 API 权限
-                                if (user.tags && user.tags.length > 0) {
-                                  user.tags.forEach((tagName) => {
-                                    const tag = config.UserConfig.Tags?.find(
-                                      (t) => t.name === tagName,
-                                    );
-                                    if (tag && tag.enabledApis) {
-                                      tagApis.push(...tag.enabledApis);
-                                    }
-                                  });
-                                }
-
-                                // 合并去重
-                                const allApis = [
-                                  ...new Set([...userApis, ...tagApis]),
-                                ];
-
-                                if (allApis.length > 0) {
-                                  return `${allApis.length} 个源`;
+                                if (allowedSourceKeys) {
+                                  return `${allowedSourceKeys.length} 个源`;
                                 }
                                 return '无限制';
                               })()}
@@ -1921,12 +1890,7 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                                   setTVBoxTokenUser({
                                     username: user.username,
                                     tvboxToken: user.tvboxToken,
-                                    tvboxEnabledSources:
-                                      user.tvboxEnabledSources,
                                   });
-                                  setSelectedTVBoxSources(
-                                    user.tvboxEnabledSources || [],
-                                  );
                                   setShowTVBoxTokenModal(true);
                                 }}
                                 className={buttonStyles.roundedPrimary}
@@ -2812,7 +2776,7 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                       </span>
                     </div>
                     <p className='text-sm text-primary-700 dark:text-primary-400 mt-1'>
-                      提示：选择"无用户组"为无限制，选择特定用户组将限制用户只能访问该用户组允许的采集源
+                      提示：未显式选择用户组的普通用户会使用默认用户组；选择特定用户组后使用该组允许的采集源
                     </p>
                   </div>
                 </div>
@@ -2832,7 +2796,11 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                     }}
                     className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors'
                   >
-                    <option value=''>无用户组（无限制）</option>
+                    <option value=''>
+                      {selectedUserForGroup?.role === 'user'
+                        ? '使用默认用户组'
+                        : '无用户组（不限制源）'}
+                    </option>
                     {userGroups.map((group) => (
                       <option key={group.name} value={group.name}>
                         {group.name}{' '}
@@ -2843,7 +2811,7 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                     ))}
                   </select>
                   <p className='mt-2 text-xs text-gray-500 dark:text-gray-400'>
-                    选择"无用户组"为无限制，选择特定用户组将限制用户只能访问该用户组允许的采集源
+                    未显式选择用户组的普通用户会使用默认用户组；未配置默认用户组时不限制源
                   </p>
                 </div>
 
@@ -3149,14 +3117,9 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
           <TVBoxTokenModal
             username={tvboxTokenUser.username}
             tvboxToken={tvboxTokenUser.tvboxToken}
-            tvboxEnabledSources={selectedTVBoxSources}
-            allSources={(config?.SourceConfig || [])
-              .filter((s) => !s.disabled)
-              .map((s) => ({ key: s.key, name: s.name }))}
             onClose={() => {
               setShowTVBoxTokenModal(false);
               setTVBoxTokenUser(null);
-              setSelectedTVBoxSources([]);
             }}
             onUpdate={refreshConfig}
           />,

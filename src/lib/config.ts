@@ -5,6 +5,11 @@ import { db } from '@/lib/db';
 
 import { normalizeAdFilterConfig } from './ad-filter';
 import { AdminConfig } from './admin.types';
+import {
+  getAdultContentPreference,
+  getAllowedSourceKeys,
+} from './source-permissions';
+import { ensureTVBoxTokens } from './tvbox-auth';
 import { DEFAULT_USER_AGENT } from './user-agent';
 
 export interface ApiSite {
@@ -347,6 +352,18 @@ export async function configSelfCheck(
     delete siteConfig.SiteInterfaceCacheTime;
     hasChanges = true;
   }
+  if (adminConfig.TVBoxSecurityConfig) {
+    const tvboxSecurityConfig =
+      adminConfig.TVBoxSecurityConfig as unknown as Record<string, unknown>;
+    if ('enableAuth' in tvboxSecurityConfig) {
+      delete tvboxSecurityConfig.enableAuth;
+      hasChanges = true;
+    }
+    if ('token' in tvboxSecurityConfig) {
+      delete tvboxSecurityConfig.token;
+      hasChanges = true;
+    }
+  }
   if (!adminConfig.SiteConfig.AdFilterConfig) hasChanges = true;
   adminConfig.SiteConfig.AdFilterConfig = normalizeAdFilterConfig(
     adminConfig.SiteConfig.AdFilterConfig,
@@ -362,6 +379,18 @@ export async function configSelfCheck(
   ) {
     adminConfig.UserConfig.Users = [];
   }
+
+  // TVBox 源权限已统一使用账号权限，清理历史独立源权限字段。
+  adminConfig.UserConfig.Users.forEach((user) => {
+    const legacyUser = user as unknown as Record<string, unknown>;
+    if ('tvboxEnabledSources' in legacyUser) {
+      delete legacyUser.tvboxEnabledSources;
+      hasChanges = true;
+    }
+  });
+  const preservedOwnerConfig = adminConfig.UserConfig.Users.find(
+    (user) => user.username === process.env.USERNAME,
+  );
 
   // 🔥 优化：只在必要时从数据库同步用户信息
   try {
@@ -527,9 +556,9 @@ export async function configSelfCheck(
     return true;
   });
   // 过滤站长
-  const originOwnerCfg = adminConfig.UserConfig.Users.find(
-    (u) => u.username === ownerUser,
-  );
+  const originOwnerCfg =
+    adminConfig.UserConfig.Users.find((u) => u.username === ownerUser) ||
+    preservedOwnerConfig;
   adminConfig.UserConfig.Users = adminConfig.UserConfig.Users.filter(
     (user) => user.username !== ownerUser,
   );
@@ -548,7 +577,11 @@ export async function configSelfCheck(
     enabledApis: originOwnerCfg?.enabledApis || undefined,
     tags: originOwnerCfg?.tags || undefined,
     oidcSub: originOwnerCfg?.oidcSub || undefined,
+    tvboxToken: originOwnerCfg?.tvboxToken || undefined,
   });
+  if (ensureTVBoxTokens(adminConfig.UserConfig.Users)) {
+    hasChanges = true;
+  }
 
   // 采集源去重
   const seenSourceKeys = new Set<string>();
@@ -678,54 +711,26 @@ function applyVideoProxy(sites: ApiSite[], config: AdminConfig): ApiSite[] {
 
 export async function getShowAdultContent(userName?: string): Promise<boolean> {
   const config = await loadConfig();
+  const userConfig = userName
+    ? config.UserConfig.Users.find((user) => user.username === userName)
+    : undefined;
+  const preference = userConfig
+    ? getAdultContentPreference(config, userConfig)
+    : undefined;
 
-  // 确定成人内容显示权限，优先级：用户 > 用户组 > 全局
-  let showAdultContent = config.SiteConfig.ShowAdultContent;
-
-  if (userName) {
-    const userConfig = config.UserConfig.Users.find(
-      (u) => u.username === userName,
-    );
-    if (userConfig) {
-      if (
-        userConfig.tags &&
-        userConfig.tags.length > 0 &&
-        config.UserConfig.Tags
-      ) {
-        // 如果用户有多个用户组，只要有一个用户组允许就允许（取并集）
-        const hasAnyTagAllowAdult = userConfig.tags.some((tagName) => {
-          const tagConfig = config.UserConfig.Tags?.find(
-            (t) => t.name === tagName,
-          );
-          return tagConfig?.showAdultContent === true;
-        });
-        if (hasAnyTagAllowAdult) {
-          showAdultContent = true;
-        } else {
-          // 检查是否有任何用户组明确禁止
-          const hasAnyTagDenyAdult = userConfig.tags.some((tagName) => {
-            const tagConfig = config.UserConfig.Tags?.find(
-              (t) => t.name === tagName,
-            );
-            return tagConfig?.showAdultContent === false;
-          });
-          if (hasAnyTagDenyAdult) {
-            showAdultContent = false;
-          }
-        }
-      }
-    }
-  }
-  return showAdultContent;
+  return preference ?? config.SiteConfig.ShowAdultContent;
 }
 
 export async function getAvailableApiSites(
   userName?: string,
 ): Promise<ApiSite[]> {
   const config = await loadConfig();
-
-  // 确定成人内容显示权限，优先级：用户 > 用户组 > 全局
-  const showAdultContent = await getShowAdultContent(userName);
+  const userConfig = userName
+    ? config.UserConfig.Users.find((user) => user.username === userName)
+    : undefined;
+  const showAdultContent =
+    (userConfig ? getAdultContentPreference(config, userConfig) : undefined) ??
+    config.SiteConfig.ShowAdultContent;
 
   // 过滤掉禁用的源，如果未启用成人内容则同时过滤掉成人资源
   const allApiSites = config.SourceConfig.filter((s) => {
@@ -738,52 +743,17 @@ export async function getAvailableApiSites(
     return applyVideoProxy(allApiSites, config);
   }
 
-  const userConfig = config.UserConfig.Users.find(
-    (u) => u.username === userName,
-  );
   if (!userConfig) {
     return applyVideoProxy(allApiSites, config);
   }
 
-  // 优先根据用户自己的 enabledApis 配置查找
-  if (userConfig.enabledApis && userConfig.enabledApis.length > 0) {
-    const userApiSitesSet = new Set(userConfig.enabledApis);
-    const userSites = allApiSites
-      .filter((s) => userApiSitesSet.has(s.key))
-      .map((s) => ({
-        key: s.key,
-        name: s.name,
-        api: s.api,
-        detail: s.detail,
-      }));
-    return applyVideoProxy(userSites, config);
-  }
-
-  // 如果没有 enabledApis 配置，则根据 tags 查找
-  if (userConfig.tags && userConfig.tags.length > 0 && config.UserConfig.Tags) {
-    const enabledApisFromTags = new Set<string>();
-
-    // 遍历用户的所有 tags，收集对应的 enabledApis
-    userConfig.tags.forEach((tagName) => {
-      const tagConfig = config.UserConfig.Tags?.find((t) => t.name === tagName);
-      if (tagConfig && tagConfig.enabledApis) {
-        tagConfig.enabledApis.forEach((apiKey) =>
-          enabledApisFromTags.add(apiKey),
-        );
-      }
-    });
-
-    if (enabledApisFromTags.size > 0) {
-      const tagSites = allApiSites
-        .filter((s) => enabledApisFromTags.has(s.key))
-        .map((s) => ({
-          key: s.key,
-          name: s.name,
-          api: s.api,
-          detail: s.detail,
-        }));
-      return applyVideoProxy(tagSites, config);
-    }
+  const allowedSourceKeys = getAllowedSourceKeys(config, userConfig);
+  if (allowedSourceKeys) {
+    const allowedSourceSet = new Set(allowedSourceKeys);
+    return applyVideoProxy(
+      allApiSites.filter((source) => allowedSourceSet.has(source.key)),
+      config,
+    );
   }
 
   // 如果都没有配置，返回所有可用的 API 站点

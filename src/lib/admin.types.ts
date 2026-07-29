@@ -43,7 +43,6 @@ export interface AdminConfig {
       tags?: string[]; // 多 tags 取并集限制
       createdAt?: number; // 用户注册时间戳
       tvboxToken?: string; // 用户专属的 TVBox Token
-      tvboxEnabledSources?: string[]; // TVBox 可访问的源（为空则返回所有源）
       oidcSub?: string; // OIDC的唯一标识符(sub字段)
     }[];
     Tags?: {
@@ -95,8 +94,6 @@ export interface AdminConfig {
     enabledCategories: string[]; // 启用的视频分类列表
   };
   TVBoxSecurityConfig?: {
-    enableAuth: boolean; // 是否启用Token验证
-    token: string; // 访问Token
     enableIpWhitelist: boolean; // 是否启用IP白名单
     allowedIPs: string[]; // 允许的IP地址列表
     enableRateLimit: boolean; // 是否启用频率限制

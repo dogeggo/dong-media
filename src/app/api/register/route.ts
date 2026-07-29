@@ -6,7 +6,7 @@ import type { AuthRole } from '@/lib/auth';
 import { createUserAuthCookieValue } from '@/lib/auth';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
-import { generateToken } from '@/lib/utils';
+import { generateTVBoxToken } from '@/lib/tvbox-token';
 
 export const runtime = 'nodejs';
 
@@ -131,7 +131,7 @@ export async function POST(req: NextRequest) {
         tags: createdUser.tags,
         createdAt: createdUser.createdAt,
         oidcSub: createdUser.oidcSub,
-        tvboxToken: generateToken(),
+        tvboxToken: generateTVBoxToken(),
       };
       config.UserConfig.Users.push(newUser);
       await db.saveAdminConfig(config);

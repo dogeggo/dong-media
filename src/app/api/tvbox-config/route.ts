@@ -7,8 +7,7 @@ import { getAvailableApiSites, loadConfig } from '@/lib/config';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic'; // 强制动态渲染
 
-// 普通用户也可以访问的 TVBox 配置接口
-// 只返回 TVBox 安全配置，不返回完整的管理配置
+// 返回当前登录用户的专属 TVBox 配置，不暴露完整管理配置。
 export async function GET(request: NextRequest) {
   try {
     // 检查用户是否登录
@@ -22,35 +21,24 @@ export async function GET(request: NextRequest) {
 
     // 获取配置
     const config = await loadConfig();
-    const securityConfig = config.TVBoxSecurityConfig || {
-      enableAuth: false,
-      token: '',
-      enableIpWhitelist: false,
-      allowedIPs: [],
-      enableRateLimit: false,
-      rateLimit: 60,
-    };
 
     // 🔑 获取当前用户的专属配置
     const currentUser = config.UserConfig.Users.find(
       (u) => u.username === authInfo.username,
     );
     const userTvboxToken = currentUser?.tvboxToken || '';
-    const userEnabledSources = currentUser?.tvboxEnabledSources || [];
 
-    // 获取所有可用源（用于管理界面选择）
+    // 与站内账号使用同一套权限计算结果。
     const allSources = (await getAvailableApiSites(authInfo.username)).map(
       (source) => ({ key: source.key, name: source.name }),
     );
 
-    // 只返回 TVBox 安全配置和站点名称（不返回其他敏感信息）
+    // 只返回当前用户生成配置链接所需的信息。
     return NextResponse.json(
       {
-        securityConfig: securityConfig,
         siteName: config.SiteConfig?.SiteName || 'Dong Media',
         // 🔑 新增：用户专属信息
         userToken: userTvboxToken,
-        userEnabledSources: userEnabledSources,
         allSources: allSources,
       },
       { headers: noStoreResponseHeaders() },

@@ -27,8 +27,6 @@ const TVBoxSecurityConfig = ({
   } | null>(null);
 
   const [securitySettings, setSecuritySettings] = useState({
-    enableAuth: false,
-    token: '',
     enableIpWhitelist: false,
     allowedIPs: [] as string[],
     enableRateLimit: false,
@@ -41,7 +39,7 @@ const TVBoxSecurityConfig = ({
   });
 
   const [newIP, setNewIP] = useState('');
-  const [showToken, setShowToken] = useState(false);
+  const [userToken, setUserToken] = useState('');
   const [isDiagnosing, setIsDiagnosing] = useState(false);
   const [diagnoseResult, setDiagnoseResult] = useState<any>(null);
 
@@ -49,20 +47,12 @@ const TVBoxSecurityConfig = ({
   useEffect(() => {
     if (config?.TVBoxSecurityConfig) {
       setSecuritySettings({
-        enableAuth: config.TVBoxSecurityConfig.enableAuth ?? false,
-        token: config.TVBoxSecurityConfig.token || generateToken(),
         enableIpWhitelist:
           config.TVBoxSecurityConfig.enableIpWhitelist ?? false,
         allowedIPs: config.TVBoxSecurityConfig.allowedIPs || [],
         enableRateLimit: config.TVBoxSecurityConfig.enableRateLimit ?? false,
         rateLimit: config.TVBoxSecurityConfig.rateLimit ?? 60,
       });
-    } else {
-      // 默认配置
-      setSecuritySettings((prev) => ({
-        ...prev,
-        token: prev.token || generateToken(),
-      }));
     }
 
     // 加载代理配置
@@ -74,18 +64,12 @@ const TVBoxSecurityConfig = ({
           'https://corsapi.smone.workers.dev',
       });
     }
-  }, [config]);
 
-  // 生成随机Token
-  function generateToken() {
-    const chars =
-      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let result = '';
-    for (let i = 0; i < 32; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-  }
+    void fetch('/api/tvbox-config')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => setUserToken(data?.userToken || ''))
+      .catch(() => setUserToken(''));
+  }, [config]);
 
   // 显示消息
   const showMessage = (type: 'success' | 'error', text: string) => {
@@ -204,53 +188,35 @@ const TVBoxSecurityConfig = ({
     }));
   };
 
-  // 复制Token
-  const copyToken = () => {
-    navigator.clipboard.writeText(securitySettings.token);
-    showMessage('success', 'Token已复制到剪贴板');
+  const generateExampleURL = () => {
+    if (!userToken) return `${window.location.origin}/tvbox`;
+    const params = new URLSearchParams({ token: userToken });
+    return `${window.location.origin}/api/tvbox?${params.toString()}`;
   };
 
-  // 生成URL示例
-  const generateExampleURL = () => {
-    const baseUrl = window.location.origin;
-    let url = `${baseUrl}/api/tvbox`;
-
-    if (securitySettings.enableAuth) {
-      url += `?token=${securitySettings.token}`;
+  const handleDiagnose = async () => {
+    if (!userToken) {
+      showMessage('error', '当前账号缺少用户专属 TVBox Token');
+      return;
     }
 
-    return url;
-  };
-
-  // 诊断配置
-  const handleDiagnose = async () => {
     setIsDiagnosing(true);
     setDiagnoseResult(null);
-
     try {
-      // 如果有 token，就传递（无论是否启用验证）
-      let diagnoseUrl = '/api/tvbox/diagnose';
-      if (securitySettings.token) {
-        diagnoseUrl += `?token=${encodeURIComponent(securitySettings.token)}`;
-      }
-
-      console.log('[Diagnose] Frontend - Token:', securitySettings.token);
-      console.log('[Diagnose] Frontend - Calling URL:', diagnoseUrl);
-
-      const response = await fetch(diagnoseUrl);
+      const params = new URLSearchParams({ token: userToken });
+      const response = await fetch(`/api/tvbox/diagnose?${params.toString()}`);
       const result = await response.json();
-
       setDiagnoseResult(result);
-
-      if (result.pass) {
-        showMessage('success', '配置诊断通过！所有检查项正常');
-      } else {
-        showMessage('error', `发现 ${result.issues?.length || 0} 个问题`);
-      }
+      showMessage(
+        result.pass ? 'success' : 'error',
+        result.pass
+          ? '配置诊断通过！所有检查项正常'
+          : `发现 ${result.issues?.length || 0} 个问题`,
+      );
     } catch (error) {
       showMessage(
         'error',
-        '诊断失败：' + (error instanceof Error ? error.message : '未知错误'),
+        `诊断失败：${error instanceof Error ? error.message : '未知错误'}`,
       );
     } finally {
       setIsDiagnosing(false);
@@ -284,104 +250,6 @@ const TVBoxSecurityConfig = ({
       )}
 
       <div className='space-y-6'>
-        {/* Token验证 */}
-        <div className='border border-gray-200 dark:border-gray-700 rounded-lg p-4'>
-          <div className='flex items-center justify-between mb-4'>
-            <div>
-              <h3 className='text-lg font-semibold text-gray-900 dark:text-gray-100'>
-                Token 验证
-              </h3>
-              <p className='text-sm text-gray-600 dark:text-gray-400'>
-                要求TVBox在URL中携带token参数才能访问
-              </p>
-            </div>
-            <label className='relative inline-flex items-center cursor-pointer'>
-              <input
-                type='checkbox'
-                checked={securitySettings.enableAuth}
-                onChange={(e) =>
-                  setSecuritySettings((prev) => ({
-                    ...prev,
-                    enableAuth: e.target.checked,
-                  }))
-                }
-                className='sr-only peer'
-              />
-              <div className="w-11 h-6 bg-gray-200 dark:bg-gray-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 dark:peer-focus:ring-primary-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary-600"></div>
-            </label>
-          </div>
-
-          {securitySettings.enableAuth && (
-            <div className='space-y-3'>
-              <div>
-                <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'>
-                  访问Token
-                </label>
-                <div className='space-y-2'>
-                  {/* Token 输入框 */}
-                  <div className='flex gap-2'>
-                    <input
-                      type={showToken ? 'text' : 'password'}
-                      value={securitySettings.token}
-                      onChange={(e) =>
-                        setSecuritySettings((prev) => ({
-                          ...prev,
-                          token: e.target.value,
-                        }))
-                      }
-                      className='flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm break-all'
-                    />
-                    <button
-                      type='button'
-                      onClick={() => setShowToken(!showToken)}
-                      className='px-3 py-2 text-sm bg-gray-100 dark:bg-gray-600 hover:bg-gray-200 dark:hover:bg-gray-500 rounded-lg whitespace-nowrap'
-                    >
-                      {showToken ? '隐藏' : '显示'}
-                    </button>
-                  </div>
-
-                  {/* 操作按钮 - 响应式布局 */}
-                  <div className='flex flex-col sm:flex-row gap-2'>
-                    <button
-                      type='button'
-                      onClick={copyToken}
-                      className='flex-1 sm:flex-none px-4 py-2 text-sm bg-primary-100 dark:bg-primary-900 hover:bg-primary-200 dark:hover:bg-primary-800 text-primary-700 dark:text-primary-300 rounded-lg flex items-center justify-center gap-2 transition-colors'
-                    >
-                      <Copy className='h-4 w-4' />
-                      复制Token
-                    </button>
-                    <button
-                      type='button'
-                      onClick={() =>
-                        setSecuritySettings((prev) => ({
-                          ...prev,
-                          token: generateToken(),
-                        }))
-                      }
-                      className='flex-1 sm:flex-none px-4 py-2 text-sm bg-primary-100 dark:bg-primary-900 hover:bg-primary-200 dark:hover:bg-primary-800 text-primary-700 dark:text-primary-300 rounded-lg flex items-center justify-center gap-2 transition-colors'
-                    >
-                      <svg
-                        className='h-4 w-4'
-                        fill='none'
-                        stroke='currentColor'
-                        viewBox='0 0 24 24'
-                      >
-                        <path
-                          strokeLinecap='round'
-                          strokeLinejoin='round'
-                          strokeWidth='2'
-                          d='M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15'
-                        />
-                      </svg>
-                      重新生成
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
         {/* IP白名单 */}
         <div className='border border-gray-200 dark:border-gray-700 rounded-lg p-4'>
           <div className='flex items-center justify-between mb-4'>
@@ -594,7 +462,7 @@ const TVBoxSecurityConfig = ({
         {/* URL示例 */}
         <div className='bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800 rounded-lg p-4'>
           <h3 className='text-sm font-semibold text-primary-900 dark:text-primary-300 mb-2'>
-            TVBox配置URL
+            当前用户的 TVBox 配置URL
           </h3>
           <div className='space-y-2'>
             {/* URL显示区域 */}
@@ -649,8 +517,8 @@ const TVBoxSecurityConfig = ({
           </div>
 
           <p className='text-xs text-primary-700 dark:text-primary-400 mt-3'>
-            💡 在TVBox中导入此URL即可使用。Base64格式请在URL后添加
-            &format=base64
+            💡 此处使用当前登录账号的用户专属 Token。Base64 格式请在URL后添加
+            &format=base64。
           </p>
         </div>
 
@@ -851,7 +719,13 @@ const TVBoxSecurityConfig = ({
                       <div className='space-y-0.5 text-primary-700 dark:text-primary-300'>
                         {(diagnoseResult as any).spider_url && (
                           <div>
-                            • 来源: {(diagnoseResult as any).spider_url}
+                            • 客户端地址: {(diagnoseResult as any).spider_url}
+                          </div>
+                        )}
+                        {(diagnoseResult as any).spider_upstream && (
+                          <div>
+                            • 服务端上游:{' '}
+                            {(diagnoseResult as any).spider_upstream}
                           </div>
                         )}
                         {(diagnoseResult as any).spider_md5 && (

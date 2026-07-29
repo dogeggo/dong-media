@@ -18,15 +18,6 @@ import { useCallback, useEffect, useState } from 'react';
 
 import PageLayout from '@/components/PageLayout';
 
-interface SecurityConfig {
-  enableAuth: boolean;
-  token: string;
-  enableIpWhitelist: boolean;
-  allowedIPs: string[];
-  enableRateLimit: boolean;
-  rateLimit: number;
-}
-
 interface Source {
   key: string;
   name: string;
@@ -42,6 +33,7 @@ interface DiagnosisResult {
   contentLength?: string;
   lastModified?: string;
   spider_url?: string;
+  spider_upstream?: string;
   spider_md5?: string;
   spider_cached?: boolean;
   spider_real_size?: number;
@@ -163,9 +155,6 @@ export default function TVBoxConfigPage() {
   const [enableSmartProxy, setEnableSmartProxy] = useState(true); // 默认启用智能搜索
   const [enableStrictMode, setEnableStrictMode] = useState(false); // 默认不启用严格模式
 
-  const [securityConfig, setSecurityConfig] = useState<SecurityConfig | null>(
-    null,
-  );
   const [siteName, setSiteName] = useState('Dong Media');
   const [loading, setLoading] = useState(true);
   const [diagnosing, setDiagnosing] = useState(false);
@@ -176,7 +165,6 @@ export default function TVBoxConfigPage() {
 
   // 🔑 新增：用户专属配置状态
   const [userToken, setUserToken] = useState('');
-  const [userEnabledSources, setUserEnabledSources] = useState<string[]>([]);
   const [allSources, setAllSources] = useState<Source[]>([]);
 
   // 智能健康检查状态
@@ -203,11 +191,9 @@ export default function TVBoxConfigPage() {
       const response = await fetch('/api/tvbox-config');
       if (response.ok) {
         const data = await response.json();
-        setSecurityConfig(data.securityConfig || null);
         setSiteName(data.siteName || 'Dong Media');
         // 🔑 新增：设置用户专属配置
         setUserToken(data.userToken || '');
-        setUserEnabledSources(data.userEnabledSources || []);
         setAllSources(data.allSources || []);
       }
     } catch (error) {
@@ -228,11 +214,8 @@ export default function TVBoxConfigPage() {
 
     params.append('format', format);
 
-    // 🔑 优先使用用户专属 Token，如果没有则使用全局 Token
     if (userToken) {
       params.append('token', userToken);
-    } else if (securityConfig?.enableAuth && securityConfig.token) {
-      params.append('token', securityConfig.token);
     }
 
     // 添加配置模式参数
@@ -249,14 +232,7 @@ export default function TVBoxConfigPage() {
     }
 
     return `${baseUrl}/api/tvbox?${params.toString()}`;
-  }, [
-    format,
-    configMode,
-    securityConfig,
-    userToken,
-    enableSmartProxy,
-    enableStrictMode,
-  ]);
+  }, [format, configMode, userToken, enableSmartProxy, enableStrictMode]);
 
   // 通用复制函数，支持 HTTP 和 HTTPS
   const copyToClipboard = async (text: string) => {
@@ -299,8 +275,8 @@ export default function TVBoxConfigPage() {
     setDiagnosisResult(null);
     try {
       const params = new URLSearchParams();
-      if (securityConfig?.enableAuth && securityConfig.token) {
-        params.append('token', securityConfig.token);
+      if (userToken) {
+        params.append('token', userToken);
       }
       const response = await fetch(`/api/tvbox/diagnose?${params.toString()}`);
       const data = await response.json();
@@ -425,16 +401,9 @@ export default function TVBoxConfigPage() {
                   </h3>
                   <div className='text-sm text-primary-700 dark:text-primary-300 space-y-1'>
                     <p>• 此配置链接仅供您个人使用，请勿分享给他人</p>
-                    {userEnabledSources.length > 0 ? (
-                      <p>
-                        • 源限制：您可以访问 {userEnabledSources.length}{' '}
-                        个指定源
-                      </p>
-                    ) : (
-                      <p>
-                        • 源权限：您可以访问所有可用源（{allSources.length} 个）
-                      </p>
-                    )}
+                    <p>
+                      • 源权限：与当前账号一致（{allSources.length} 个可用源）
+                    </p>
                   </div>
                 </div>
               </div>
@@ -442,54 +411,23 @@ export default function TVBoxConfigPage() {
           </div>
         )}
 
-        {/* 安全状态提示 */}
-        {!loading && securityConfig && !userToken && (
+        {/* Token 异常提示 */}
+        {!loading && !userToken && (
           <div className='mb-6'>
-            {securityConfig.enableAuth ||
-            securityConfig.enableIpWhitelist ||
-            securityConfig.enableRateLimit ? (
-              <div className='bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-700 rounded-lg p-4'>
-                <div className='flex items-start gap-3'>
-                  <Shield className='w-5 h-5 text-primary-600 dark:text-primary-400 mt-0.5' />
-                  <div>
-                    <h3 className='font-semibold text-primary-800 dark:text-primary-200 mb-1'>
-                      🔒 已启用安全配置
-                    </h3>
-                    <div className='text-sm text-primary-700 dark:text-primary-300 space-y-1'>
-                      {securityConfig.enableAuth && (
-                        <p>• Token验证：已启用（URL已自动包含token）</p>
-                      )}
-                      {securityConfig.enableIpWhitelist && (
-                        <p>
-                          • IP白名单：已启用（限制{' '}
-                          {securityConfig.allowedIPs.length} 个IP访问）
-                        </p>
-                      )}
-                      {securityConfig.enableRateLimit && (
-                        <p>
-                          • 频率限制：每分钟最多 {securityConfig.rateLimit}{' '}
-                          次请求
-                        </p>
-                      )}
-                    </div>
-                  </div>
+            <div className='bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg p-4'>
+              <div className='flex items-start gap-3'>
+                <AlertTriangle className='w-5 h-5 text-red-600 dark:text-red-400 mt-0.5' />
+                <div>
+                  <h3 className='font-semibold text-red-800 dark:text-red-200 mb-1'>
+                    未找到用户专属 Token
+                  </h3>
+                  <p className='text-sm text-red-700 dark:text-red-300'>
+                    请刷新页面；如果问题持续存在，请联系管理员为当前账号重新生成
+                    TVBox Token。
+                  </p>
                 </div>
               </div>
-            ) : (
-              <div className='bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded-lg p-4'>
-                <div className='flex items-start gap-3'>
-                  <AlertTriangle className='w-5 h-5 text-yellow-600 dark:text-yellow-400 mt-0.5' />
-                  <div>
-                    <h3 className='font-semibold text-yellow-800 dark:text-yellow-200 mb-1'>
-                      ⚠️ 安全提醒
-                    </h3>
-                    <p className='text-sm text-yellow-700 dark:text-yellow-300'>
-                      当前未启用任何安全配置，任何人都可以访问您的TVBox配置。建议在管理后台启用安全选项。
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
+            </div>
           </div>
         )}
 
@@ -721,11 +659,6 @@ export default function TVBoxConfigPage() {
                     params.append('format', format);
                     if (userToken) {
                       params.append('token', userToken);
-                    } else if (
-                      securityConfig?.enableAuth &&
-                      securityConfig.token
-                    ) {
-                      params.append('token', securityConfig.token);
                     }
                     if (configMode !== 'standard') {
                       params.append('mode', configMode);
@@ -776,11 +709,6 @@ export default function TVBoxConfigPage() {
                     params.append('format', format);
                     if (userToken) {
                       params.append('token', userToken);
-                    } else if (
-                      securityConfig?.enableAuth &&
-                      securityConfig.token
-                    ) {
-                      params.append('token', securityConfig.token);
                     }
                     if (configMode !== 'standard') {
                       params.append('mode', configMode);
@@ -1083,10 +1011,18 @@ export default function TVBoxConfigPage() {
                           <div className='grid grid-cols-1 md:grid-cols-2 gap-3 text-sm'>
                             <div>
                               <div className='text-primary-600 dark:text-primary-400 text-xs mb-1'>
-                                来源
+                                客户端地址
                               </div>
                               <div className='text-gray-900 dark:text-gray-100 font-mono text-xs break-all'>
                                 {diagnosisResult.spider_url || 'unknown'}
+                              </div>
+                            </div>
+                            <div>
+                              <div className='text-primary-600 dark:text-primary-400 text-xs mb-1'>
+                                服务端上游
+                              </div>
+                              <div className='text-gray-900 dark:text-gray-100 font-mono text-xs break-all'>
+                                {diagnosisResult.spider_upstream || 'unknown'}
                               </div>
                             </div>
                             <div>
@@ -1169,11 +1105,12 @@ export default function TVBoxConfigPage() {
                                   <li>
                                     • 多个源失败后才成功，建议检查网络稳定性
                                   </li>
-                                  {diagnosisResult.spider_url?.includes(
+                                  {diagnosisResult.spider_upstream?.includes(
                                     'github',
                                   ) && (
                                     <li>
-                                      • GitHub 源访问可能受限，建议配置代理
+                                      • 服务端连接 GitHub
+                                      上游较慢，请检查服务器网络
                                     </li>
                                   )}
                                 </ul>
@@ -2119,10 +2056,10 @@ export default function TVBoxConfigPage() {
                 智能 Spider 管理
               </h3>
               <ul className='text-gray-600 dark:text-gray-400 space-y-1 ml-6'>
-                <li>• 自动探测多源（国内CDN + GitHub）</li>
-                <li>• 智能重试 + 失败源记录</li>
-                <li>• 动态缓存（成功 4h / 失败 10min）</li>
-                <li>• JAR 文件验证 + 真实 MD5</li>
+                <li>• TVBox 客户端仅访问本站，不直连 GitHub</li>
+                <li>• 服务端固定版本下载并缓存</li>
+                <li>• SHA-256 校验 + 真实 MD5</li>
+                <li>• 用户无需手工下载或安装 JAR</li>
               </ul>
             </div>
             <div className='space-y-2'>
@@ -2151,8 +2088,8 @@ export default function TVBoxConfigPage() {
                 Q: Spider JAR 加载失败怎么办？
               </h3>
               <p className='text-gray-600 dark:text-gray-400'>
-                A:
-                依次使用"智能健康"→"源修复"→"深度诊断"，系统会自动检测问题并给出解决方案
+                A: TVBox 会从本站自动加载 JAR，无需访问 GitHub
+                或手工安装；可先运行基础诊断检查本站代理是否可访问
               </p>
             </div>
             <div>
@@ -2188,7 +2125,7 @@ export default function TVBoxConfigPage() {
                 A: TVBox → 设置 → 配置地址 → 刷新，配置即时生效
               </p>
             </div>
-            {securityConfig?.enableAuth && (
+            {userToken && (
               <div>
                 <h3 className='font-semibold text-gray-900 dark:text-white mb-1'>
                   Q: Token 认证相关？

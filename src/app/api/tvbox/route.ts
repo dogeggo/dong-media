@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { noStoreResponseHeaders } from '@/lib/cache-system';
-import { getShowAdultContent, loadConfig } from '@/lib/config';
+import { getAvailableApiSites, loadConfig } from '@/lib/config';
 import { rateLimiter } from '@/lib/rate-limiter';
 import { getSiteOrigin } from '@/lib/site-origin';
-import { getCandidates, getSpiderJar } from '@/lib/spiderJar';
+import { getSpiderJar } from '@/lib/spiderJar';
+import { resolveTVBoxUser } from '@/lib/tvbox-auth';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
 // 生产环境使用Redis/Kvrocks的频率限制
@@ -101,7 +102,8 @@ interface TVBoxConfig {
   }>; // 播放规则（用于影视仓模式）
   maxHomeVideoContent?: string; // 首页最大视频数量
   spider_backup?: string; // 备用本地代理地址
-  spider_url?: string; // 实际使用的 spider URL
+  spider_url?: string; // TVBox 客户端实际使用的 spider URL
+  spider_upstream?: string; // 服务端校验和缓存的上游来源
   spider_md5?: string; // spider jar 的 MD5
   spider_cached?: boolean; // 是否来自缓存
   spider_real_size?: number; // 实际 jar 大小（字节）
@@ -117,14 +119,8 @@ export async function GET(request: NextRequest) {
     const mode = (searchParams.get('mode') || '').toLowerCase(); // 支持safe|min模式
     const token = searchParams.get('token'); // 获取token参数
     const forceSpiderRefresh = searchParams.get('forceSpiderRefresh') === '1'; // 强制刷新spider缓存
-    if (!token) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401, headers: noStoreResponseHeaders() },
-      );
-    }
     const config = await loadConfig();
-    const user = config.UserConfig.Users.find((u) => u.tvboxToken === token);
+    const user = resolveTVBoxUser(config, token);
     if (!user) {
       return NextResponse.json(
         { error: 'Unauthorized' },
@@ -143,21 +139,6 @@ export async function GET(request: NextRequest) {
     }
     const securityConfig = config.TVBoxSecurityConfig;
     const proxyConfig = config.TVBoxProxyConfig; // 🔑 读取代理配置
-
-    // 🔑 新增：基于用户 Token 的身份识别
-    let currentUser: {
-      username: string;
-      tvboxEnabledSources?: string[];
-    } | null = null;
-    const showAdultContent = await getShowAdultContent(user.username);
-    currentUser = {
-      username: user.username,
-      tvboxEnabledSources: user.tvboxEnabledSources,
-    };
-    console.log(
-      `[TVBox] 识别到用户 ${user.username}，源限制:`,
-      user.tvboxEnabledSources || '无限制',
-    );
 
     // IP白名单检查（从数据库配置读取）
     if (
@@ -248,44 +229,18 @@ export async function GET(request: NextRequest) {
 
     const baseUrl = getSiteOrigin(request);
 
-    // 从配置中获取源站列表
-    const sourceConfigs = config.SourceConfig || [];
-
-    if (sourceConfigs.length === 0) {
+    if (!config.SourceConfig?.length) {
       return NextResponse.json(
         { error: '没有配置任何视频源' },
         { status: 500, headers: noStoreResponseHeaders() },
       );
     }
 
-    // 过滤掉被禁用的源站和没有API地址的源站
-    let enabledSources = sourceConfigs.filter(
-      (source) => !source.disabled && source.api && source.api.trim() !== '',
+    // 与站内账号共用唯一一套源权限：个人 enabledApis > 用户组 > 默认用户组。
+    const enabledSources = await getAvailableApiSites(user.username);
+    console.log(
+      `[TVBox] 用户 ${user.username} 使用账号源权限，可访问 ${enabledSources.length} 个源`,
     );
-
-    // 应用过滤逻辑：filter 参数和用户权限都要满足
-    if (!showAdultContent) {
-      enabledSources = enabledSources.filter((source) => !source.is_adult);
-      console.log(
-        `[TVBox] 🛡️ 成人内容过滤已启用 showAdultContent=${showAdultContent}），剩余源数量: ${enabledSources.length}`,
-      );
-    } else if (showAdultContent) {
-      console.log(`[TVBox] ℹ️ 用户有成人内容访问权限，未过滤成人源`);
-    }
-
-    // 🔑 新增：应用用户的源限制（如果有）
-    if (
-      currentUser?.tvboxEnabledSources &&
-      currentUser.tvboxEnabledSources.length > 0
-    ) {
-      const allowedSourceKeys = new Set(currentUser.tvboxEnabledSources);
-      enabledSources = enabledSources.filter((source) =>
-        allowedSourceKeys.has(source.key),
-      );
-      console.log(
-        `[TVBox] 用户 ${currentUser.username} 限制后的源数量: ${enabledSources.length}`,
-      );
-    }
 
     // 转换为TVBox格式
     let tvboxConfig: TVBoxConfig = {
@@ -766,12 +721,14 @@ export async function GET(request: NextRequest) {
     // 使用新的 Spider Jar 管理逻辑（下载真实 jar + 缓存）
     const jarInfo = await getSpiderJar(forceSpiderRefresh);
 
-    // 只使用固定 commit 且通过 SHA-256 校验的 JAR。
-    const finalSpiderUrl = `${jarInfo.source};md5;${jarInfo.md5}`;
+    // 客户端只访问本站；本站从固定 commit 获取、校验并缓存 JAR。
+    const localSpiderUrl = `${baseUrl}/api/proxy/spider.jar?token=${encodeURIComponent(token)}`;
+    const finalSpiderUrl = `${localSpiderUrl};md5;${jarInfo.md5}`;
 
     // 设置 spider 字段和状态透明化字段
     tvboxConfig.spider = finalSpiderUrl;
-    tvboxConfig.spider_url = jarInfo.source; // 真实来源（用于诊断）
+    tvboxConfig.spider_url = localSpiderUrl;
+    tvboxConfig.spider_upstream = jarInfo.source;
     tvboxConfig.spider_md5 = jarInfo.md5;
     tvboxConfig.spider_cached = jarInfo.cached;
     tvboxConfig.spider_real_size = jarInfo.size;
@@ -839,6 +796,7 @@ export async function GET(request: NextRequest) {
       // 保存诊断字段
       const spiderDiagnostics = {
         spider_url: tvboxConfig.spider_url,
+        spider_upstream: tvboxConfig.spider_upstream,
         spider_md5: tvboxConfig.spider_md5,
         spider_cached: tvboxConfig.spider_cached,
         spider_real_size: tvboxConfig.spider_real_size,
@@ -896,8 +854,8 @@ export async function GET(request: NextRequest) {
     }
 
     // 添加 Spider 状态透明化字段（帮助诊断）
-    tvboxConfig.spider_backup = `${baseUrl}/api/proxy/spider.jar?token=${encodeURIComponent(token)}`;
-    tvboxConfig.spider_candidates = getCandidates();
+    tvboxConfig.spider_backup = localSpiderUrl;
+    tvboxConfig.spider_candidates = [localSpiderUrl];
 
     // 根据format参数返回不同格式
     if (format === 'base64' || format === 'txt') {

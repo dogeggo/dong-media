@@ -442,17 +442,6 @@ export function isSeriesCompleted(remarks?: string): boolean {
   return /完结|已完结|全\d+集|完(?!整)/.test(remarks);
 }
 
-// 生成随机 Token
-export function generateToken(length = 32): string {
-  const chars =
-    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = '';
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-}
-
 // 中文数字映射表（用于智能数字变体生成）
 const CHINESE_TO_ARABIC: { [key: string]: string } = {
   一: '1',

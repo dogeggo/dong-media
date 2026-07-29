@@ -4,7 +4,7 @@ import { createUserAuthCookieValue } from '@/lib/auth';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { unsealSession } from '@/lib/sealed-session';
-import { generateToken } from '@/lib/utils';
+import { generateTVBoxToken } from '@/lib/tvbox-token';
 
 export const runtime = 'nodejs';
 
@@ -102,14 +102,21 @@ export async function POST(request: NextRequest) {
       session.sub,
       undefined,
     );
-    config = await loadConfig();
-    const user = config.UserConfig.Users.find(
-      (candidate) => candidate.username === username,
-    );
-    if (user) {
-      user.tvboxToken = generateToken();
-      await db.saveAdminConfig(config);
+    const createdUser = await db.getUserInfo(username);
+    if (!createdUser) {
+      return NextResponse.json({ error: '创建用户失败' }, { status: 500 });
     }
+    config.UserConfig.Users.push({
+      username: createdUser.username,
+      role: createdUser.role,
+      banned: createdUser.banned,
+      enabledApis: createdUser.enabledApis,
+      tags: createdUser.tags,
+      createdAt: createdUser.createdAt,
+      oidcSub: createdUser.oidcSub,
+      tvboxToken: generateTVBoxToken(),
+    });
+    await db.saveAdminConfig(config);
 
     const response = NextResponse.json({ ok: true, redirect: '/' });
     response.cookies.set(

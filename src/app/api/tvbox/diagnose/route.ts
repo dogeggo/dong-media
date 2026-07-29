@@ -124,7 +124,7 @@ export async function GET(req: NextRequest) {
       '[Diagnose] Backend - Received token:',
       token ? '***' + token.slice(-4) : 'none',
     );
-    console.log('[Diagnose] Backend - Request URL:', req.url);
+    console.log('[Diagnose] Backend - Request path:', req.nextUrl.pathname);
 
     // 直接调用 tvbox API 函数，而不是通过 HTTP fetch
     // 构建模拟请求对象
@@ -134,8 +134,8 @@ export async function GET(req: NextRequest) {
     }
 
     console.log(
-      '[Diagnose] Backend - Direct calling tvbox GET with URL:',
-      configUrl,
+      '[Diagnose] Backend - Direct calling tvbox GET with token:',
+      token ? '***' + token.slice(-4) : 'none',
     );
 
     // 创建模拟请求
@@ -169,7 +169,7 @@ export async function GET(req: NextRequest) {
     if (!cfgRes.ok) {
       result.issues.push(`config request failed: ${cfgRes.status}`);
     }
-    if (!contentType.includes('text/plain')) {
+    if (cfgRes.ok && !contentType.includes('text/plain')) {
       result.issues.push('content-type is not text/plain');
     }
     if (!parsed) {
@@ -189,6 +189,9 @@ export async function GET(req: NextRequest) {
       // 传递 Spider 状态透明化字段
       if (parsed.spider_url) {
         result.spider_url = parsed.spider_url;
+      }
+      if (parsed.spider_upstream) {
+        result.spider_upstream = parsed.spider_upstream;
       }
       if (parsed.spider_md5) {
         result.spider_md5 = parsed.spider_md5;
