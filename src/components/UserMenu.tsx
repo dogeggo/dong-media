@@ -1022,20 +1022,6 @@ export const UserMenu: React.FC<UserMenuProps> = ({ initialOpen = false }) => {
             <LogOut className='w-4 h-4' />
             <span className='font-medium'>登出</span>
           </button>
-          {/* 分割线 */}
-          <div className='my-1 border-t border-primary-200/50 dark:border-white/[0.06]'></div>
-
-          {/* 版本信息 */}
-          <a
-            href='https://github.com/SzeMeng76/LunaTV'
-            target='_blank'
-            rel='noopener noreferrer'
-            className='w-full px-3 py-2 text-center flex items-center justify-center text-gray-500 dark:text-gray-400 hover:bg-primary-100/50 dark:hover:bg-white/[0.03] transition-colors text-xs'
-          >
-            <div className='flex items-center gap-1'>
-              <span className='font-mono'>Github Repo</span>
-            </div>
-          </a>
         </div>
       </div>
     </>
