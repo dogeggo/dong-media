@@ -6,6 +6,7 @@ import {
   type PlayRecord,
 } from './db.client';
 import { getQueryClient } from './get-query-client';
+import { createSingleFlight } from './single-flight';
 import { getCurrentUserDataScope, userQueryKeys } from './user-query-keys';
 
 const WATCHING_UPDATES_STALE_TIME = 5 * 60 * 1_000;
@@ -48,33 +49,34 @@ interface SourceDefinition {
   name: string;
 }
 
-export async function checkWatchingUpdates(
-  forceRefresh = false,
-): Promise<void> {
-  const queryClient = getQueryClient();
-  const scope = getCurrentUserDataScope();
-  const queryKey = userQueryKeys.watchingUpdates(scope);
-  if (forceRefresh) {
-    queryClient.removeQueries({ queryKey, exact: true });
-  }
+const runWatchingUpdatesCheck = createSingleFlight<string, void>();
 
-  try {
-    const result = await queryClient.fetchQuery({
-      queryKey,
-      queryFn: () => calculateWatchingUpdates(forceRefresh),
-      staleTime: WATCHING_UPDATES_STALE_TIME,
-      gcTime: 10 * 60 * 1_000,
-    });
-    notify(result);
-  } catch {
-    notify(emptyWatchingUpdate());
-  }
+export function checkWatchingUpdates(forceRefresh = false): Promise<void> {
+  const scope = getCurrentUserDataScope();
+  return runWatchingUpdatesCheck(scope, async () => {
+    const queryClient = getQueryClient();
+    const queryKey = userQueryKeys.watchingUpdates(scope);
+
+    try {
+      const result = await queryClient.fetchQuery({
+        queryKey,
+        queryFn: calculateWatchingUpdates,
+        // 强制刷新仍保留查询实例，以便并发调用复用同一个请求。
+        staleTime: forceRefresh ? 0 : WATCHING_UPDATES_STALE_TIME,
+        gcTime: 10 * 60 * 1_000,
+      });
+      notify(result);
+    } catch {
+      // 失败结果也短暂写入状态，避免订阅方因“缓存仍为空”立即再次触发检查。
+      const fallback = emptyWatchingUpdate();
+      queryClient.setQueryData(queryKey, fallback);
+      notify(fallback);
+    }
+  });
 }
 
-async function calculateWatchingUpdates(
-  forceRefresh: boolean,
-): Promise<WatchingUpdate> {
-  const recordsByKey = await getAllPlayRecords(forceRefresh);
+async function calculateWatchingUpdates(): Promise<WatchingUpdate> {
+  const recordsByKey = await getAllPlayRecords();
   const candidates = Object.entries(recordsByKey)
     .map(([key, record]) => ({ key, record }))
     .filter(({ record }) => record.total_episodes > 1);

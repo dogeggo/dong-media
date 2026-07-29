@@ -95,6 +95,14 @@ function triggerGlobalError(message: string): void {
 function emitChange<T>(event: UserDataUpdateEvent, data: T): void {
   if (typeof window === 'undefined') return;
   const scope = getCurrentUserDataScope();
+  if (event === 'playRecordsUpdated') {
+    // 只有播放记录实际发生变化时，追番结果才需要失效。读取播放记录时
+    // 不能清除此查询，否则追番计算会在读取自身输入时删除正在执行的查询。
+    getQueryClient().removeQueries({
+      queryKey: userQueryKeys.watchingUpdates(scope),
+      exact: true,
+    });
+  }
   const change: UserDataChange = {
     event,
     kind: eventKind[event],
@@ -110,12 +118,6 @@ function updateQuery<T>(kind: UserDataQueryKind, data: T): void {
   getBroadcastChannel();
   const scope = getCurrentUserDataScope();
   getQueryClient().setQueryData(userDataQueryKey(kind, scope), data);
-  if (kind === 'play-records') {
-    getQueryClient().removeQueries({
-      queryKey: userQueryKeys.watchingUpdates(scope),
-      exact: true,
-    });
-  }
 }
 
 async function refreshBroadcastChange(change: UserDataChange): Promise<void> {

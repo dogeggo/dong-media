@@ -11,7 +11,6 @@ import { PlayRecord, ReleaseCalendarItem, UserStat } from '@/lib/types';
 import { processImageUrl } from '@/lib/utils';
 import {
   checkWatchingUpdates,
-  forceClearWatchingUpdatesCache,
   getDetailedWatchingUpdates,
   type WatchingUpdate,
 } from '@/lib/watching-updates';
@@ -454,9 +453,7 @@ const PlayStatsPage: React.FC = () => {
       // 监听播放记录更新事件（修复删除记录后页面不立即更新的问题）
       const handlePlayRecordsUpdate = () => {
         console.log('播放记录更新，重新检查 watchingUpdates');
-        // 🔧 优化：使用新的强制清除缓存函数
-        forceClearWatchingUpdatesCache();
-        // 🔧 优化：强制刷新追番更新状态，跳过缓存时间检查
+        // 播放记录写入时已经使旧结果失效，这里直接触发一次强制刷新。
         checkWatchingUpdates(true).then(() => {
           const details = getDetailedWatchingUpdates();
           setWatchingUpdates(details);
