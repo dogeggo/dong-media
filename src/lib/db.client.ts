@@ -258,7 +258,10 @@ export class UserDataRepository {
     }
   }
 
-  async deletePlayRecord(source: string, id: string): Promise<PlayRecord> {
+  async deletePlayRecord(
+    source: string,
+    id: string,
+  ): Promise<PlayRecord | undefined> {
     const key = generateStorageKey(source, id);
     const scope = getCurrentUserDataScope();
     const queryClient = getQueryClient();
@@ -293,7 +296,9 @@ export class UserDataRepository {
       }
     }
 
-    if (!deleted) throw new Error('播放记录不存在');
+    // Deleting a missing record is intentionally idempotent. A user can switch
+    // sources before the first progress save, in which case there is no old
+    // record to migrate and the source switch should still continue.
     return deleted;
   }
 
@@ -530,7 +535,7 @@ export async function savePlayRecord(
 export function deletePlayRecord(
   source: string,
   id: string,
-): Promise<PlayRecord> {
+): Promise<PlayRecord | undefined> {
   return userDataRepository.deletePlayRecord(source, id);
 }
 

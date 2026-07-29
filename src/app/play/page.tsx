@@ -2528,7 +2528,7 @@ function PlayPageClient() {
         return;
       }
 
-      const record: PlayRecord = await deletePlayRecord(
+      const record = await deletePlayRecord(
         currentSourceRef.current,
         currentIdRef.current,
       );
