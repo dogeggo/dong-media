@@ -9,6 +9,7 @@
     "lint": "eslint src",
     "lint:fix": "eslint src --fix && pnpm format",
     "lint:strict": "eslint --max-warnings=0 src",
+    "migrate:oidc": "node scripts/migrate-legacy-oidc.js",
     "typecheck": "tsc --noEmit --incremental false",
     "test": "node --test src/lib/*.test.ts",
     "format": "prettier -w .",

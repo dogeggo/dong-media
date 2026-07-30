@@ -8,6 +8,7 @@ import {
   isOauthOnlyProvider,
   verifyOidcIdToken,
 } from '@/lib/oidc';
+import { createOidcSub } from '@/lib/oidc-sub';
 import { safeFetch } from '@/lib/safe-upstream-url';
 import { sealSession, unsealSession } from '@/lib/sealed-session';
 import { normalizeSiteOrigin } from '@/lib/site-origin';
@@ -208,7 +209,7 @@ async function processCallback(request: NextRequest, params: CallbackParams) {
     ) {
       return loginError(origin, 'OIDC用户信息无效');
     }
-    const oidcSub = `${provider.id}:${String(providerSubject)}`;
+    const oidcSub = createOidcSub(provider.id, providerSubject);
 
     let username = await db.getUserByOidcSub(oidcSub);
     let role: 'owner' | 'admin' | 'user' = 'user';

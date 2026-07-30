@@ -5,6 +5,7 @@ import { createClient, RedisClientType } from 'redis';
 import { db } from '@/lib/db';
 
 import { AdminConfig } from './admin.types';
+import { assertNamespacedOidcSub } from './oidc-sub';
 import {
   EpisodeSkipConfig,
   Favorite,
@@ -409,10 +410,11 @@ export abstract class BaseRedisStorage implements IStorage {
     }
 
     if (oidcSub) {
-      userInfo.oidcSub = oidcSub;
+      const namespacedOidcSub = assertNamespacedOidcSub(oidcSub);
+      userInfo.oidcSub = namespacedOidcSub;
       // 创建OIDC映射
       await this.withRetry(() =>
-        this.client.set(this.oidcSubKey(oidcSub), userName),
+        this.client.set(this.oidcSubKey(namespacedOidcSub), userName),
       );
     }
 
