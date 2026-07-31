@@ -274,7 +274,9 @@ export const CACHE_POLICIES = {
     namespace: 'release-calendar',
     scope: 'public',
     freshTtlSeconds: 8 * 60 * 60,
-    staleTtlSeconds: 8 * 60 * 60,
+    // Keep the last successful calendar for a week so latency-sensitive home
+    // requests can always serve stale data while a refresh runs in background.
+    staleTtlSeconds: 7 * 24 * 60 * 60,
     layers: ['memory', 'shared'],
     maxEntryBytes: 8 * MiB,
     tags: ['calendar'],

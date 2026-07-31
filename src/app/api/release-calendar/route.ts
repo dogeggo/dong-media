@@ -1,37 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import {
-  CACHE_POLICIES,
-  cacheService,
-  noStoreResponseHeaders,
-} from '@/lib/cache-system';
+import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { loadConfig } from '@/lib/config';
-import { getReleaseCalendarWithFilters } from '@/lib/release-calendar-scraper';
-import { ReleaseCalendarResult } from '@/lib/types';
+import { getReleaseCalendarCache } from '@/lib/release-calendar-cache';
 
 export const runtime = 'nodejs';
-
-type CalendarCacheValue = ReleaseCalendarResult;
 
 function privateJson(body: unknown, init?: ResponseInit) {
   return NextResponse.json(body, {
     ...init,
     headers: noStoreResponseHeaders(init?.headers),
   });
-}
-
-async function loadFullCalendar(): Promise<CalendarCacheValue> {
-  const { allCalendar, filters } = await getReleaseCalendarWithFilters({});
-  if (allCalendar.items.length === 0) {
-    throw new Error('发布日历上游未返回可用数据');
-  }
-  return {
-    items: allCalendar.items,
-    total: allCalendar.total,
-    hasMore: allCalendar.hasMore,
-    filters,
-  };
 }
 
 export async function GET(request: NextRequest) {
@@ -72,14 +52,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const cached = await cacheService.getOrLoadResult(
-      CACHE_POLICIES.RELEASE_CALENDAR,
-      { projection: 'full' },
-      loadFullCalendar,
-      {
-        forceRefresh: refresh,
-      },
-    );
+    const cached = await getReleaseCalendarCache({ forceRefresh: refresh });
     if (refresh && cached.status === 'STALE') {
       return privateJson(
         {
@@ -136,12 +109,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const cached = await cacheService.getOrLoadResult(
-      CACHE_POLICIES.RELEASE_CALENDAR,
-      { projection: 'full' },
-      loadFullCalendar,
-      { forceRefresh: true },
-    );
+    const cached = await getReleaseCalendarCache({ forceRefresh: true });
     if (cached.status === 'STALE') {
       return privateJson(
         {

@@ -1,16 +1,24 @@
 'use client';
 
-import { Calendar, ChevronRight, Film, Play, Sparkles, Tv } from 'lucide-react';
+import {
+  Calendar,
+  ChevronRight,
+  Film,
+  Play,
+  RefreshCw,
+  Sparkles,
+  Tv,
+} from 'lucide-react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { memo, useMemo } from 'react';
 
-import type { BangumiCalendarData } from '@/lib/bangumi-api';
 import type {
-  DoubanMovieDetail,
-  ReleaseCalendarItem,
-  ShortDramaItem,
-} from '@/lib/types';
+  HomeBangumiItem,
+  HomeUpcomingItem,
+} from '@/lib/home-recommendations';
+import type { DoubanMovieDetail, ShortDramaItem } from '@/lib/types';
+import type { HomeSectionKey } from '@/hooks/useHomeRecommendations';
 
 import DeferredSection from '@/components/DeferredSection';
 import ScrollableRow from '@/components/ScrollableRow';
@@ -26,7 +34,6 @@ const VideoCard = dynamic(() => import('@/components/VideoCard'), {
 const SECTION_PLACEHOLDER = 'min-h-[22rem] sm:min-h-[28rem]';
 const SKELETON_ITEMS = Array.from({ length: 8 }, (_, index) => index);
 
-type BangumiItem = BangumiCalendarData['items'][number];
 type UpcomingFilter = 'all' | 'movie' | 'tv';
 
 interface SectionLoadingState {
@@ -39,21 +46,47 @@ interface SectionLoadingState {
 }
 
 interface HomeRecommendationSectionsProps {
+  errors: Record<HomeSectionKey, string | null>;
   hotMovies: DoubanMovieDetail[];
   hotShortDramas: ShortDramaItem[];
   hotTvShows: DoubanMovieDetail[];
   hotVarietyShows: DoubanMovieDetail[];
   loading: SectionLoadingState;
   onUpcomingFilterChange: (filter: UpcomingFilter) => void;
-  shortDramasError: boolean;
+  retry: Record<HomeSectionKey, () => void>;
   today: Date;
-  todayAnimes: BangumiItem[];
+  todayAnimes: HomeBangumiItem[];
   upcomingFilter: UpcomingFilter;
-  upcomingReleases: ReleaseCalendarItem[];
+  upcomingReleases: HomeUpcomingItem[];
 }
 
 function LoadingCards() {
   return SKELETON_ITEMS.map((index) => <SkeletonCard key={index} />);
+}
+
+function SectionLoadError({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      className='flex min-h-44 w-full flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-gray-300 bg-gray-50/70 px-6 text-center dark:border-gray-700 dark:bg-gray-900/40'
+      role='alert'
+    >
+      <p className='text-sm text-gray-500 dark:text-gray-400'>{message}</p>
+      <button
+        type='button'
+        onClick={onRetry}
+        className='inline-flex items-center gap-2 rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-600'
+      >
+        <RefreshCw className='h-4 w-4' />
+        重新加载
+      </button>
+    </div>
+  );
 }
 
 function UpcomingLoadingSection() {
@@ -100,14 +133,18 @@ function UpcomingLoadingSection() {
 }
 
 const UpcomingSection = memo(function UpcomingSection({
+  error,
   filter,
   onFilterChange,
+  onRetry,
   releases,
   today,
 }: {
   filter: UpcomingFilter;
+  error: string | null;
   onFilterChange: (filter: UpcomingFilter) => void;
-  releases: ReleaseCalendarItem[];
+  onRetry: () => void;
+  releases: HomeUpcomingItem[];
   today: Date;
 }) {
   const counts = useMemo(
@@ -175,50 +212,58 @@ const UpcomingSection = memo(function UpcomingSection({
         ))}
       </div>
 
-      <ScrollableRow enableVirtualization>
-        {filteredReleases.map((release) => {
-          const releaseDate = new Date(release.releaseDate);
-          const daysDiff = Math.ceil(
-            (releaseDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
-          );
-          const remarks =
-            daysDiff < 0
-              ? `已上映${Math.abs(daysDiff)}天`
-              : daysDiff === 0
-                ? '今日上映'
-                : `${daysDiff}天后上映`;
+      {error && releases.length === 0 ? (
+        <SectionLoadError message={error} onRetry={onRetry} />
+      ) : (
+        <ScrollableRow enableVirtualization>
+          {filteredReleases.map((release) => {
+            const releaseDate = new Date(release.releaseDate);
+            const daysDiff = Math.ceil(
+              (releaseDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
+            );
+            const remarks =
+              daysDiff < 0
+                ? `已上映${Math.abs(daysDiff)}天`
+                : daysDiff === 0
+                  ? '今日上映'
+                  : `${daysDiff}天后上映`;
 
-          return (
-            <VideoCard
-              key={`${release.id}-${release.releaseDate}`}
-              source='upcoming_release'
-              id={release.id}
-              source_name='即将上映'
-              from='douban'
-              title={release.title}
-              poster={release.cover || '/placeholder-poster.jpg'}
-              year={release.releaseDate.split('-')[0]}
-              type={release.type}
-              remarks={remarks}
-              releaseDate={release.releaseDate}
-              query={release.title}
-              episodes={
-                release.episodes || (release.type === 'tv' ? undefined : 1)
-              }
-            />
-          );
-        })}
-      </ScrollableRow>
+            return (
+              <VideoCard
+                key={`${release.id}-${release.releaseDate}`}
+                source='upcoming_release'
+                id={release.id}
+                source_name='即将上映'
+                from='douban'
+                title={release.title}
+                poster={release.cover || '/placeholder-poster.jpg'}
+                year={release.releaseDate.split('-')[0]}
+                type={release.type}
+                remarks={remarks}
+                releaseDate={release.releaseDate}
+                query={release.title}
+                episodes={
+                  release.episodes || (release.type === 'tv' ? undefined : 1)
+                }
+              />
+            );
+          })}
+        </ScrollableRow>
+      )}
     </section>
   );
 });
 
 const MovieSection = memo(function MovieSection({
+  error,
   items,
   loading,
+  onRetry,
 }: {
+  error: string | null;
   items: DoubanMovieDetail[];
   loading: boolean;
+  onRetry: () => void;
 }) {
   return (
     <section className='mb-2 sm:mb-8'>
@@ -232,35 +277,43 @@ const MovieSection = memo(function MovieSection({
           <ChevronRight className='ml-1 h-4 w-4' />
         </Link>
       </div>
-      <ScrollableRow enableVirtualization>
-        {loading
-          ? LoadingCards()
-          : items.map((movie) => (
-              <VideoCard
-                key={movie.id}
-                from='douban'
-                source='douban'
-                id={movie.id}
-                source_name='豆瓣'
-                title={movie.title}
-                poster={movie.poster}
-                douban_id={Number(movie.id)}
-                rate={movie.rate}
-                year={movie.year}
-                type='movie'
-              />
-            ))}
-      </ScrollableRow>
+      {error && items.length === 0 && !loading ? (
+        <SectionLoadError message={error} onRetry={onRetry} />
+      ) : (
+        <ScrollableRow enableVirtualization>
+          {loading
+            ? LoadingCards()
+            : items.map((movie) => (
+                <VideoCard
+                  key={movie.id}
+                  from='douban'
+                  source='douban'
+                  id={movie.id}
+                  source_name='豆瓣'
+                  title={movie.title}
+                  poster={movie.poster}
+                  douban_id={Number(movie.id)}
+                  rate={movie.rate}
+                  year={movie.year}
+                  type='movie'
+                />
+              ))}
+        </ScrollableRow>
+      )}
     </section>
   );
 });
 
 const TvSection = memo(function TvSection({
+  error,
   items,
   loading,
+  onRetry,
 }: {
+  error: string | null;
   items: DoubanMovieDetail[];
   loading: boolean;
+  onRetry: () => void;
 }) {
   return (
     <section className='mb-2 sm:mb-8'>
@@ -274,35 +327,43 @@ const TvSection = memo(function TvSection({
           <ChevronRight className='ml-1 h-4 w-4' />
         </Link>
       </div>
-      <ScrollableRow enableVirtualization>
-        {loading
-          ? LoadingCards()
-          : items.map((show) => (
-              <VideoCard
-                key={show.id}
-                from='douban'
-                source='douban'
-                id={show.id}
-                source_name='豆瓣'
-                title={show.title}
-                poster={show.poster}
-                douban_id={Number(show.id)}
-                rate={show.rate}
-                year={show.year}
-                type='tv'
-              />
-            ))}
-      </ScrollableRow>
+      {error && items.length === 0 && !loading ? (
+        <SectionLoadError message={error} onRetry={onRetry} />
+      ) : (
+        <ScrollableRow enableVirtualization>
+          {loading
+            ? LoadingCards()
+            : items.map((show) => (
+                <VideoCard
+                  key={show.id}
+                  from='douban'
+                  source='douban'
+                  id={show.id}
+                  source_name='豆瓣'
+                  title={show.title}
+                  poster={show.poster}
+                  douban_id={Number(show.id)}
+                  rate={show.rate}
+                  year={show.year}
+                  type='tv'
+                />
+              ))}
+        </ScrollableRow>
+      )}
     </section>
   );
 });
 
 const BangumiSection = memo(function BangumiSection({
+  error,
   items,
   loading,
+  onRetry,
 }: {
-  items: BangumiItem[];
+  error: string | null;
+  items: HomeBangumiItem[];
   loading: boolean;
+  onRetry: () => void;
 }) {
   return (
     <section className='mb-2 sm:mb-8'>
@@ -320,42 +381,43 @@ const BangumiSection = memo(function BangumiSection({
           <ChevronRight className='ml-1 h-4 w-4' />
         </Link>
       </div>
-      <ScrollableRow enableVirtualization>
-        {loading
-          ? LoadingCards()
-          : items.map((anime) => (
-              <VideoCard
-                key={anime.id}
-                from='douban'
-                source='bangumi'
-                id={anime.id.toString()}
-                source_name='Bangumi'
-                title={anime.name_cn || anime.name}
-                poster={
-                  anime.images?.large ||
-                  anime.images?.common ||
-                  anime.images?.medium ||
-                  anime.images?.small ||
-                  anime.images?.grid ||
-                  '/placeholder-poster.jpg'
-                }
-                douban_id={anime.id}
-                rate={anime.rating?.score?.toFixed(1) || ''}
-                year={anime.air_date?.split('-')?.[0] || ''}
-                isBangumi
-              />
-            ))}
-      </ScrollableRow>
+      {error && items.length === 0 && !loading ? (
+        <SectionLoadError message={error} onRetry={onRetry} />
+      ) : (
+        <ScrollableRow enableVirtualization>
+          {loading
+            ? LoadingCards()
+            : items.map((anime) => (
+                <VideoCard
+                  key={anime.id}
+                  from='douban'
+                  source='bangumi'
+                  id={anime.id.toString()}
+                  source_name='Bangumi'
+                  title={anime.name_cn || anime.name}
+                  poster={anime.image || '/placeholder-poster.jpg'}
+                  douban_id={anime.id}
+                  rate={anime.score?.toFixed(1) || ''}
+                  year={anime.air_date?.split('-')?.[0] || ''}
+                  isBangumi
+                />
+              ))}
+        </ScrollableRow>
+      )}
     </section>
   );
 });
 
 const VarietySection = memo(function VarietySection({
+  error,
   items,
   loading,
+  onRetry,
 }: {
+  error: string | null;
   items: DoubanMovieDetail[];
   loading: boolean;
+  onRetry: () => void;
 }) {
   return (
     <section className='mb-2 sm:mb-8'>
@@ -373,35 +435,43 @@ const VarietySection = memo(function VarietySection({
           <ChevronRight className='ml-1 h-4 w-4' />
         </Link>
       </div>
-      <ScrollableRow enableVirtualization>
-        {loading
-          ? LoadingCards()
-          : items.map((show) => (
-              <VideoCard
-                key={show.id}
-                from='douban'
-                source='douban'
-                id={show.id}
-                source_name='豆瓣'
-                title={show.title}
-                poster={show.poster}
-                douban_id={Number(show.id)}
-                rate={show.rate}
-                year={show.year}
-                type='variety'
-              />
-            ))}
-      </ScrollableRow>
+      {error && items.length === 0 && !loading ? (
+        <SectionLoadError message={error} onRetry={onRetry} />
+      ) : (
+        <ScrollableRow enableVirtualization>
+          {loading
+            ? LoadingCards()
+            : items.map((show) => (
+                <VideoCard
+                  key={show.id}
+                  from='douban'
+                  source='douban'
+                  id={show.id}
+                  source_name='豆瓣'
+                  title={show.title}
+                  poster={show.poster}
+                  douban_id={Number(show.id)}
+                  rate={show.rate}
+                  year={show.year}
+                  type='variety'
+                />
+              ))}
+        </ScrollableRow>
+      )}
     </section>
   );
 });
 
 const ShortDramaSection = memo(function ShortDramaSection({
+  error,
   items,
   loading,
+  onRetry,
 }: {
+  error: string | null;
   items: ShortDramaItem[];
   loading: boolean;
+  onRetry: () => void;
 }) {
   return (
     <section className='mb-2 sm:mb-8'>
@@ -419,25 +489,34 @@ const ShortDramaSection = memo(function ShortDramaSection({
           <ChevronRight className='ml-1 h-4 w-4' />
         </Link>
       </div>
-      <ScrollableRow enableVirtualization>
-        {loading
-          ? LoadingCards()
-          : items.map((drama) => (
-              <ShortDramaCard key={drama.id} drama={drama} className='w-full' />
-            ))}
-      </ScrollableRow>
+      {error && items.length === 0 && !loading ? (
+        <SectionLoadError message={error} onRetry={onRetry} />
+      ) : (
+        <ScrollableRow enableVirtualization>
+          {loading
+            ? LoadingCards()
+            : items.map((drama) => (
+                <ShortDramaCard
+                  key={drama.id}
+                  drama={drama}
+                  className='w-full'
+                />
+              ))}
+        </ScrollableRow>
+      )}
     </section>
   );
 });
 
 function HomeRecommendationSections({
+  errors,
   hotMovies,
   hotShortDramas,
   hotTvShows,
   hotVarietyShows,
   loading,
   onUpcomingFilterChange,
-  shortDramasError,
+  retry,
   today,
   todayAnimes,
   upcomingFilter,
@@ -449,34 +528,69 @@ function HomeRecommendationSections({
         <UpcomingLoadingSection />
       ) : upcomingReleases.length > 0 ? (
         <UpcomingSection
+          error={errors.upcoming}
           releases={upcomingReleases}
           filter={upcomingFilter}
           onFilterChange={onUpcomingFilterChange}
+          onRetry={retry.upcoming}
+          today={today}
+        />
+      ) : errors.upcoming ? (
+        <UpcomingSection
+          error={errors.upcoming}
+          releases={[]}
+          filter={upcomingFilter}
+          onFilterChange={onUpcomingFilterChange}
+          onRetry={retry.upcoming}
           today={today}
         />
       ) : null}
 
       <DeferredSection placeholderClassName={SECTION_PLACEHOLDER}>
-        <MovieSection items={hotMovies} loading={loading.movies} />
+        <MovieSection
+          error={errors.movies}
+          items={hotMovies}
+          loading={loading.movies}
+          onRetry={retry.movies}
+        />
       </DeferredSection>
 
       <DeferredSection placeholderClassName={SECTION_PLACEHOLDER}>
-        <TvSection items={hotTvShows} loading={loading.tv} />
+        <TvSection
+          error={errors.tv}
+          items={hotTvShows}
+          loading={loading.tv}
+          onRetry={retry.tv}
+        />
       </DeferredSection>
 
       <DeferredSection placeholderClassName={SECTION_PLACEHOLDER}>
-        <BangumiSection items={todayAnimes} loading={loading.bangumi} />
+        <BangumiSection
+          error={errors.bangumi}
+          items={todayAnimes}
+          loading={loading.bangumi}
+          onRetry={retry.bangumi}
+        />
       </DeferredSection>
 
       <DeferredSection placeholderClassName={SECTION_PLACEHOLDER}>
-        <VarietySection items={hotVarietyShows} loading={loading.variety} />
+        <VarietySection
+          error={errors.variety}
+          items={hotVarietyShows}
+          loading={loading.variety}
+          onRetry={retry.variety}
+        />
       </DeferredSection>
 
-      {!shortDramasError && (
+      {(loading.shortDramas ||
+        hotShortDramas.length > 0 ||
+        errors.shortDramas) && (
         <DeferredSection placeholderClassName={SECTION_PLACEHOLDER}>
           <ShortDramaSection
+            error={errors.shortDramas}
             items={hotShortDramas}
             loading={loading.shortDramas}
+            onRetry={retry.shortDramas}
           />
         </DeferredSection>
       )}

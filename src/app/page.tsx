@@ -2,34 +2,28 @@
 
 'use client';
 
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Trash2 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import {
   memo,
-  startTransition,
   Suspense,
   useCallback,
   useEffect,
   useMemo,
   useReducer,
-  useRef,
   useState,
 } from 'react';
 
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
-import { BangumiCalendarData, GetBangumiCalendarData } from '@/lib/bangumi-api';
 // 客户端收藏 API
 import {
   clearAllFavorites,
   getAllFavorites,
   getAllPlayRecords,
 } from '@/lib/db.client';
-import { getDoubanCategories, getDoubanDetails } from '@/lib/douban-api';
-import { getRecommendedShortDramas } from '@/lib/shortdrama-api';
-import { ReleaseCalendarItem, ShortDramaItem } from '@/lib/types';
-import { DoubanMovieDetail } from '@/lib/types';
 import { getCurrentUserDataScope, userQueryKeys } from '@/lib/user-query-keys';
+import { useHomeRecommendations } from '@/hooks/useHomeRecommendations';
 
 import CapsuleSwitch from '@/components/CapsuleSwitch';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -51,171 +45,49 @@ const MemoizedHeroBanner = memo(HeroBanner);
 // 合并首页状态；具体推荐区域通过 memo 组件建立独立渲染边界。
 interface HomeState {
   activeTab: 'home' | 'favorites';
-  hotMovies: DoubanMovieDetail[];
-  hotTvShows: DoubanMovieDetail[];
-  hotVarietyShows: DoubanMovieDetail[];
-  hotAnime: DoubanMovieDetail[];
-  hotShortDramas: ShortDramaItem[];
-  bangumiCalendarData: BangumiCalendarData[];
-  upcomingReleases: ReleaseCalendarItem[];
-  loading: {
-    movies: boolean;
-    tv: boolean;
-    variety: boolean;
-    anime: boolean;
-    shortDramas: boolean;
-    bangumi: boolean;
-    upcoming: boolean;
-  };
-  shortDramasError: boolean;
   username: string;
   showAnnouncement: boolean;
 }
 
 type HomeAction =
   | { type: 'SET_ACTIVE_TAB'; payload: 'home' | 'favorites' }
-  | { type: 'SET_HOT_MOVIES'; payload: DoubanMovieDetail[] }
-  | { type: 'SET_HOT_TV_SHOWS'; payload: DoubanMovieDetail[] }
-  | { type: 'SET_HOT_VARIETY_SHOWS'; payload: DoubanMovieDetail[] }
-  | { type: 'SET_HOT_ANIME'; payload: DoubanMovieDetail[] }
-  | { type: 'SET_HOT_SHORT_DRAMAS'; payload: ShortDramaItem[] }
-  | { type: 'SET_BANGUMI_CALENDAR_DATA'; payload: BangumiCalendarData[] }
-  | { type: 'COMPLETE_UPCOMING_LOAD'; payload: ReleaseCalendarItem[] }
-  | { type: 'SET_LOADING'; payload: Partial<HomeState['loading']> }
-  | { type: 'SET_SHORT_DRAMAS_ERROR'; payload: boolean }
   | { type: 'SET_USERNAME'; payload: string }
-  | { type: 'SET_SHOW_ANNOUNCEMENT'; payload: boolean }
-  | {
-      type: 'UPDATE_HOT_MOVIES';
-      payload: (prev: DoubanMovieDetail[]) => DoubanMovieDetail[];
-    }
-  | {
-      type: 'UPDATE_HOT_TV_SHOWS';
-      payload: (prev: DoubanMovieDetail[]) => DoubanMovieDetail[];
-    }
-  | {
-      type: 'UPDATE_HOT_VARIETY_SHOWS';
-      payload: (prev: DoubanMovieDetail[]) => DoubanMovieDetail[];
-    }
-  | {
-      type: 'UPDATE_HOT_ANIME';
-      payload: (prev: DoubanMovieDetail[]) => DoubanMovieDetail[];
-    }
-  | {
-      type: 'UPDATE_HOT_SHORT_DRAMAS';
-      payload: (prev: ShortDramaItem[]) => ShortDramaItem[];
-    };
+  | { type: 'SET_SHOW_ANNOUNCEMENT'; payload: boolean };
 
 const homeReducer = (state: HomeState, action: HomeAction): HomeState => {
   switch (action.type) {
     case 'SET_ACTIVE_TAB':
       return { ...state, activeTab: action.payload };
-    case 'SET_HOT_MOVIES':
-      return { ...state, hotMovies: action.payload };
-    case 'SET_HOT_TV_SHOWS':
-      return { ...state, hotTvShows: action.payload };
-    case 'SET_HOT_VARIETY_SHOWS':
-      return { ...state, hotVarietyShows: action.payload };
-    case 'SET_HOT_ANIME':
-      return { ...state, hotAnime: action.payload };
-    case 'SET_HOT_SHORT_DRAMAS':
-      return { ...state, hotShortDramas: action.payload };
-    case 'SET_BANGUMI_CALENDAR_DATA':
-      return { ...state, bangumiCalendarData: action.payload };
-    case 'COMPLETE_UPCOMING_LOAD':
-      return {
-        ...state,
-        upcomingReleases: action.payload,
-        loading: { ...state.loading, upcoming: false },
-      };
-    case 'SET_LOADING':
-      return { ...state, loading: { ...state.loading, ...action.payload } };
-    case 'SET_SHORT_DRAMAS_ERROR':
-      return { ...state, shortDramasError: action.payload };
     case 'SET_USERNAME':
       return { ...state, username: action.payload };
     case 'SET_SHOW_ANNOUNCEMENT':
       return { ...state, showAnnouncement: action.payload };
-    case 'UPDATE_HOT_MOVIES':
-      return { ...state, hotMovies: action.payload(state.hotMovies) };
-    case 'UPDATE_HOT_TV_SHOWS':
-      return { ...state, hotTvShows: action.payload(state.hotTvShows) };
-    case 'UPDATE_HOT_VARIETY_SHOWS':
-      return {
-        ...state,
-        hotVarietyShows: action.payload(state.hotVarietyShows),
-      };
-    case 'UPDATE_HOT_ANIME':
-      return { ...state, hotAnime: action.payload(state.hotAnime) };
-    case 'UPDATE_HOT_SHORT_DRAMAS':
-      return { ...state, hotShortDramas: action.payload(state.hotShortDramas) };
     default:
       return state;
   }
 };
 
 function HomeClient() {
-  // 🚀 TanStack Query - 全局缓存管理
-  const queryClient = useQueryClient();
   const { announcement } = useSite();
-  // 使用 reducer 集中管理首页状态，非交互型数据更新统一降为 transition。
+  const {
+    errors: recommendationErrors,
+    hotAnime,
+    hotMovies,
+    hotShortDramas,
+    hotTvShows,
+    hotVarietyShows,
+    loading,
+    retry: retryRecommendation,
+    todayAnimes,
+    upcomingReleases,
+  } = useHomeRecommendations();
   const [state, dispatch] = useReducer(homeReducer, {
     activeTab: 'home',
-    hotMovies: [],
-    hotTvShows: [],
-    hotVarietyShows: [],
-    hotAnime: [],
-    hotShortDramas: [],
-    bangumiCalendarData: [],
-    upcomingReleases: [],
-    loading: {
-      movies: true,
-      tv: true,
-      variety: true,
-      anime: true,
-      shortDramas: true,
-      bangumi: true,
-      upcoming: true,
-    },
-    shortDramasError: false,
     username: '',
     showAnnouncement: false,
   });
 
-  const dispatchDeferred = useCallback((action: HomeAction) => {
-    startTransition(() => dispatch(action));
-  }, []);
-
-  // 解构状态以便使用
-  const {
-    activeTab,
-    hotMovies,
-    hotTvShows,
-    hotVarietyShows,
-    hotAnime,
-    hotShortDramas,
-    bangumiCalendarData,
-    upcomingReleases,
-    loading,
-    shortDramasError,
-    username,
-    showAnnouncement,
-  } = state;
-
-  // 🚀 Web Worker引用
-  const workerRef = useRef<Worker | null>(null);
-
-  // 🎯 优化：缓存今日番剧计算
-  const todayAnimes = useMemo(() => {
-    const today = new Date();
-    const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const currentWeekday = weekdays[today.getDay()];
-
-    return (
-      bangumiCalendarData.find((item) => item.weekday.en === currentWeekday)
-        ?.items || []
-    );
-  }, [bangumiCalendarData]); // 依赖bangumiCalendarData，数据变化时重新计算
+  const { activeTab, username, showAnnouncement } = state;
 
   // 🎯 优化：缓存今天的日期（用于上映日期计算）
   const today = useMemo(() => {
@@ -434,381 +306,6 @@ function HomeClient() {
     };
   }, [favoriteItems]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const timers = new Set<number>();
-    const idleCallbacks = new Set<number>();
-    const connection = (
-      navigator as Navigator & {
-        connection?: { effectiveType?: string; saveData?: boolean };
-      }
-    ).connection;
-    const isConstrainedNetwork =
-      connection?.saveData === true ||
-      connection?.effectiveType === 'slow-2g' ||
-      connection?.effectiveType === '2g';
-
-    const scheduleIdle = (
-      work: () => void | Promise<void>,
-      timeout: number,
-    ) => {
-      if (typeof window.requestIdleCallback === 'function') {
-        const idleId = window.requestIdleCallback(
-          () => {
-            idleCallbacks.delete(idleId);
-            if (!cancelled) void work();
-          },
-          { timeout },
-        );
-        idleCallbacks.add(idleId);
-        return;
-      }
-
-      const timerId = window.setTimeout(
-        () => {
-          timers.delete(timerId);
-          if (!cancelled) void work();
-        },
-        Math.min(timeout, 1200),
-      );
-      timers.add(timerId);
-    };
-
-    const scheduleAfter = (
-      work: () => void | Promise<void>,
-      delay: number,
-      idleTimeout = 2000,
-    ) => {
-      const timerId = window.setTimeout(() => {
-        timers.delete(timerId);
-        if (!cancelled) scheduleIdle(work, idleTimeout);
-      }, delay);
-      timers.add(timerId);
-    };
-
-    const enrichMovies = async (movies: DoubanMovieDetail[]) => {
-      for (const movie of movies.slice(0, 2)) {
-        if (cancelled) return;
-        try {
-          const detailsRes = await getDoubanDetails(movie.id);
-          const detail = detailsRes.list?.[0];
-          if (cancelled || detailsRes.code !== 200 || !detail) continue;
-          dispatchDeferred({
-            type: 'UPDATE_HOT_MOVIES',
-            payload: (items) =>
-              items.map((item) =>
-                item.id === movie.id
-                  ? {
-                      ...item,
-                      plot_summary: detail.plot_summary,
-                      backdrop: detail.backdrop,
-                      trailerUrl: detail.trailerUrl,
-                    }
-                  : item,
-              ),
-          });
-        } catch (error) {
-          console.warn(`获取电影 ${movie.id} 详情失败:`, error);
-        }
-      }
-    };
-
-    const enrichTvShows = async (shows: DoubanMovieDetail[]) => {
-      for (const show of shows.slice(0, 2)) {
-        if (cancelled) return;
-        try {
-          const detailsRes = await getDoubanDetails(show.id);
-          const detail = detailsRes.list?.[0];
-          if (cancelled || detailsRes.code !== 200 || !detail) continue;
-          dispatchDeferred({
-            type: 'UPDATE_HOT_TV_SHOWS',
-            payload: (items) =>
-              items.map((item) =>
-                item.id === show.id
-                  ? {
-                      ...item,
-                      plot_summary: detail.plot_summary,
-                      backdrop: detail.backdrop,
-                      trailerUrl: detail.trailerUrl,
-                    }
-                  : item,
-              ),
-          });
-        } catch (error) {
-          console.warn(`获取剧集 ${show.id} 详情失败:`, error);
-        }
-      }
-    };
-
-    const enrichVarietyShow = async (show: DoubanMovieDetail) => {
-      try {
-        const detailsRes = await getDoubanDetails(show.id);
-        const detail = detailsRes.list?.[0];
-        if (cancelled || detailsRes.code !== 200 || !detail) return;
-        dispatchDeferred({
-          type: 'UPDATE_HOT_VARIETY_SHOWS',
-          payload: (items) =>
-            items.map((item) =>
-              item.id === show.id ? { ...item, ...detail } : item,
-            ),
-        });
-      } catch (error) {
-        console.warn(`获取综艺 ${show.id} 详情失败:`, error);
-      }
-    };
-
-    const enrichAnime = async (anime: DoubanMovieDetail) => {
-      try {
-        const detailsRes = await getDoubanDetails(anime.id);
-        const detail = detailsRes.list?.[0];
-        if (cancelled || detailsRes.code !== 200 || !detail) return;
-        dispatchDeferred({
-          type: 'UPDATE_HOT_ANIME',
-          payload: (items) =>
-            items.map((item) =>
-              item.id === anime.id ? { ...item, ...detail } : item,
-            ),
-        });
-      } catch (error) {
-        console.warn(`获取动漫 ${anime.id} 详情失败:`, error);
-      }
-    };
-
-    const loadMovies = async () => {
-      try {
-        const result = await getDoubanCategories({
-          kind: 'movie',
-          category: '热门',
-          type: '全部',
-        });
-        if (cancelled || result?.code !== 200) return;
-        dispatchDeferred({ type: 'SET_HOT_MOVIES', payload: result.list });
-        scheduleAfter(
-          () => enrichMovies(result.list),
-          isConstrainedNetwork ? 5000 : 2200,
-        );
-      } catch (error) {
-        console.warn('获取热门电影失败:', error);
-      } finally {
-        if (!cancelled) {
-          dispatchDeferred({
-            type: 'SET_LOADING',
-            payload: { movies: false },
-          });
-        }
-      }
-    };
-
-    const loadTvShows = async () => {
-      try {
-        const result = await getDoubanCategories({
-          kind: 'tv',
-          category: 'tv',
-          type: 'tv',
-        });
-        if (cancelled || result?.code !== 200) return;
-        dispatchDeferred({ type: 'SET_HOT_TV_SHOWS', payload: result.list });
-        scheduleAfter(
-          () => enrichTvShows(result.list),
-          isConstrainedNetwork ? 5000 : 2200,
-        );
-      } catch (error) {
-        console.warn('获取热门剧集失败:', error);
-      } finally {
-        if (!cancelled) {
-          dispatchDeferred({ type: 'SET_LOADING', payload: { tv: false } });
-        }
-      }
-    };
-
-    const loadVarietyShows = async () => {
-      try {
-        const result = await getDoubanCategories({
-          kind: 'tv',
-          category: 'show',
-          type: 'show',
-        });
-        if (cancelled || result?.code !== 200) return;
-        dispatchDeferred({
-          type: 'SET_HOT_VARIETY_SHOWS',
-          payload: result.list,
-        });
-        if (result.list[0]) {
-          scheduleAfter(
-            () => enrichVarietyShow(result.list[0]),
-            isConstrainedNetwork ? 6000 : 3000,
-          );
-        }
-      } catch (error) {
-        console.warn('获取热门综艺失败:', error);
-      } finally {
-        if (!cancelled) {
-          dispatchDeferred({
-            type: 'SET_LOADING',
-            payload: { variety: false },
-          });
-        }
-      }
-    };
-
-    const loadAnime = async () => {
-      try {
-        const result = await getDoubanCategories({
-          kind: 'tv',
-          category: 'tv',
-          type: 'tv_animation',
-        });
-        if (cancelled || result?.code !== 200) return;
-        dispatchDeferred({ type: 'SET_HOT_ANIME', payload: result.list });
-        if (result.list[0]) {
-          scheduleAfter(
-            () => enrichAnime(result.list[0]),
-            isConstrainedNetwork ? 6000 : 3000,
-          );
-        }
-      } catch (error) {
-        console.warn('获取热门动漫失败:', error);
-      } finally {
-        if (!cancelled) {
-          dispatchDeferred({ type: 'SET_LOADING', payload: { anime: false } });
-        }
-      }
-    };
-
-    const loadShortDramas = async () => {
-      try {
-        const dramas = await getRecommendedShortDramas(15);
-        if (cancelled) return;
-        dispatchDeferred({
-          type: 'SET_SHORT_DRAMAS_ERROR',
-          payload: dramas.length === 0,
-        });
-        dispatchDeferred({ type: 'SET_HOT_SHORT_DRAMAS', payload: dramas });
-      } catch (error) {
-        console.warn('获取热门短剧失败:', error);
-        if (!cancelled) {
-          dispatchDeferred({ type: 'SET_SHORT_DRAMAS_ERROR', payload: true });
-        }
-      } finally {
-        if (!cancelled) {
-          dispatchDeferred({
-            type: 'SET_LOADING',
-            payload: { shortDramas: false },
-          });
-        }
-      }
-    };
-
-    const loadBangumi = async () => {
-      try {
-        const data = await GetBangumiCalendarData();
-        if (!cancelled && Array.isArray(data)) {
-          dispatchDeferred({
-            type: 'SET_BANGUMI_CALENDAR_DATA',
-            payload: data,
-          });
-        }
-      } catch (error) {
-        console.warn('获取 Bangumi 日历失败:', error);
-      } finally {
-        if (!cancelled) {
-          dispatchDeferred({
-            type: 'SET_LOADING',
-            payload: { bangumi: false },
-          });
-        }
-      }
-    };
-
-    const loadUpcoming = async () => {
-      let worker: Worker | null = null;
-
-      const complete = (items: ReleaseCalendarItem[]) => {
-        if (!cancelled) {
-          dispatchDeferred({
-            type: 'COMPLETE_UPCOMING_LOAD',
-            payload: items,
-          });
-        }
-      };
-
-      try {
-        const response = await fetch('/api/release-calendar?limit=100');
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-        if (cancelled) return;
-        if (!Array.isArray(data?.items)) {
-          throw new Error('响应数据格式错误');
-        }
-
-        worker = new Worker(
-          new URL('../lib/release-calendar-worker.ts', import.meta.url),
-        );
-        workerRef.current = worker;
-
-        let settled = false;
-        const finishWorker = (items: ReleaseCalendarItem[]) => {
-          if (settled) return;
-          settled = true;
-          worker?.terminate();
-          if (workerRef.current === worker) {
-            workerRef.current = null;
-          }
-          complete(items);
-        };
-
-        worker.onmessage = (event: MessageEvent) => {
-          const { selectedItems, error } = event.data as {
-            selectedItems?: ReleaseCalendarItem[];
-            error?: unknown;
-          };
-          finishWorker(
-            !error && Array.isArray(selectedItems) ? selectedItems : [],
-          );
-        };
-        worker.onerror = () => finishWorker([]);
-
-        const currentDate = new Date();
-        currentDate.setHours(0, 0, 0, 0);
-        worker.postMessage({
-          releases: data.items,
-          today: currentDate.toISOString().split('T')[0],
-        });
-      } catch (error) {
-        worker?.terminate();
-        if (workerRef.current === worker) {
-          workerRef.current = null;
-        }
-        console.warn('获取即将上映数据失败:', error);
-        complete([]);
-      }
-    };
-
-    // Hero 和首个推荐区所需的请求立即开始；其余分区延迟并分批执行，避免
-    // 七路列表和详情请求同时争抢连接、连续触发主线程更新。
-    void Promise.allSettled([loadMovies(), loadTvShows(), loadUpcoming()]);
-    scheduleAfter(
-      async () => {
-        await Promise.allSettled([loadVarietyShows(), loadAnime()]);
-        if (cancelled) return;
-        await Promise.allSettled([loadShortDramas(), loadBangumi()]);
-      },
-      isConstrainedNetwork ? 3000 : 1200,
-      3000,
-    );
-
-    return () => {
-      cancelled = true;
-      timers.forEach((timerId) => window.clearTimeout(timerId));
-      idleCallbacks.forEach((idleId) => window.cancelIdleCallback(idleId));
-      if (workerRef.current) {
-        workerRef.current.terminate();
-        workerRef.current = null;
-      }
-    };
-  }, []);
-
-  // 🚀 TanStack Query - 处理清空所有收藏（使用 queryClient 刷新缓存）
   const handleClearFavorites = async () => {
     await clearAllFavorites();
   };
@@ -1152,13 +649,14 @@ function HomeClient() {
               <ContinueWatching />
 
               <HomeRecommendationSections
+                errors={recommendationErrors}
                 hotMovies={hotMovies}
                 hotShortDramas={hotShortDramas}
                 hotTvShows={hotTvShows}
                 hotVarietyShows={hotVarietyShows}
                 loading={loading}
                 onUpcomingFilterChange={handleUpcomingFilterChange}
-                shortDramasError={shortDramasError}
+                retry={retryRecommendation}
                 today={today}
                 todayAnimes={todayAnimes}
                 upcomingFilter={upcomingFilter}

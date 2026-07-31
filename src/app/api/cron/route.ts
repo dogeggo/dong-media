@@ -7,6 +7,7 @@ import { getAvailableApiSites, loadConfig, refineConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { getDetailFromApi, searchFromApi } from '@/lib/downstream';
 import { refreshLiveChannels } from '@/lib/live';
+import { warmReleaseCalendarCache } from '@/lib/release-calendar-cache';
 import { SearchResult } from '@/lib/types';
 import { generateSearchVariants } from '@/lib/utils';
 
@@ -98,6 +99,14 @@ async function cronJob() {
     console.log('✅ 直播频道刷新完成');
   } catch (err) {
     console.error('❌ 直播频道刷新失败:', err);
+  }
+
+  try {
+    console.log('📅 预热发布日历...');
+    await warmReleaseCalendarCache();
+    console.log('✅ 发布日历预热完成');
+  } catch (err) {
+    console.error('❌ 发布日历预热失败:', err);
   }
 
   // try {

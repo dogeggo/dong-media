@@ -4,7 +4,7 @@ Dong Media 的业务缓存以 `src/lib/cache-system/policies.ts` 为唯一策略
 
 ## Docker 媒体缓存
 
-图片和静态视频成功响应固定缓存一周（`604800` 秒）。磁盘对象也在一周后过期，并在达到容量高水位时按最近最少使用顺序清理到 80%。建议为两个 v2 目录挂载持久卷：
+图片和静态视频成功响应固定缓存一周（`604800` 秒）。磁盘对象也在一周后过期，并在达到容量高水位时按最近最少使用顺序清理到 80%。建议为图片和视频缓存目录挂载持久卷：
 
 ```yaml
 services:
@@ -16,8 +16,8 @@ services:
       VIDEO_CACHE_MAX_BYTES: 2147483648
       VIDEO_CACHE_MAX_ENTRY_BYTES: 104857600
     volumes:
-      - /srv/dong-media/cache/image-v2:/app/cache/image-v2
-      - /srv/dong-media/cache/video-v2:/app/cache/video-v2
+      - /srv/dong-media/cache/image:/app/cache/image
+      - /srv/dong-media/cache/video:/app/cache/video
 ```
 
 可用参数：

@@ -387,14 +387,14 @@ function envBytes(name: string, fallback: number): number {
 const mediaRoot = process.env.MEDIA_CACHE_DIR || '/app/cache';
 
 export const imageDiskCache = new DiskMediaCache({
-  rootDir: path.join(mediaRoot, 'image-v2'),
+  rootDir: path.join(mediaRoot, 'image'),
   kind: 'image',
   maxBytes: envBytes('IMAGE_CACHE_MAX_BYTES', 512 * 1024 * 1024),
   maxEntryBytes: envBytes('IMAGE_CACHE_MAX_ENTRY_BYTES', 20 * 1024 * 1024),
 });
 
 export const videoDiskCache = new DiskMediaCache({
-  rootDir: path.join(mediaRoot, 'video-v2'),
+  rootDir: path.join(mediaRoot, 'video'),
   kind: 'video',
   maxBytes: envBytes('VIDEO_CACHE_MAX_BYTES', 2 * 1024 * 1024 * 1024),
   maxEntryBytes: envBytes('VIDEO_CACHE_MAX_ENTRY_BYTES', 100 * 1024 * 1024),

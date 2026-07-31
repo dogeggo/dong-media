@@ -4,14 +4,9 @@ import { ReleaseCalendarItem } from './types';
 import { getRandomUserAgentWithInfo, getSecChUaHeaders } from './user-agent';
 
 const baseUrl = 'https://g.manmankan.com/dy2013';
-
-/**
- * 随机延迟（模拟真实用户行为）
- */
-function randomDelay(min = 1000, max = 3000): Promise<void> {
-  const delay = Math.floor(Math.random() * (max - min + 1)) + min;
-  return new Promise((resolve) => setTimeout(resolve, delay));
-}
+const MAX_SCRAPE_RETRIES = 1;
+const RETRY_DELAYS = [1500];
+const UPSTREAM_TIMEOUT_MS = 12_000;
 
 /**
  * 生成唯一ID
@@ -252,13 +247,7 @@ function parseTVHTML(html: string): ReleaseCalendarItem[] {
 export async function scrapeMovieReleases(
   retryCount = 0,
 ): Promise<ReleaseCalendarItem[]> {
-  const MAX_RETRIES = 3;
-  const RETRY_DELAYS = [2000, 4000, 8000]; // 指数退避
-
   try {
-    // 添加随机延迟（模拟真实用户）
-    await randomDelay(500, 1500);
-
     const url = `${baseUrl}/dianying/shijianbiao/`;
 
     // 获取随机浏览器指纹
@@ -282,7 +271,7 @@ export async function scrapeMovieReleases(
         'User-Agent': ua,
         Referer: baseUrl + '/',
       },
-      signal: AbortSignal.timeout(20000), // 20秒超时（增加到20秒）
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -296,12 +285,12 @@ export async function scrapeMovieReleases(
     return items;
   } catch (error) {
     console.error(
-      `抓取电影数据失败 (重试 ${retryCount}/${MAX_RETRIES}):`,
+      `抓取电影数据失败 (重试 ${retryCount}/${MAX_SCRAPE_RETRIES}):`,
       error,
     );
 
     // 重试机制
-    if (retryCount < MAX_RETRIES) {
+    if (retryCount < MAX_SCRAPE_RETRIES) {
       console.warn(`等待 ${RETRY_DELAYS[retryCount]}ms 后重试...`);
       await new Promise((resolve) =>
         setTimeout(resolve, RETRY_DELAYS[retryCount]),
@@ -320,13 +309,7 @@ export async function scrapeMovieReleases(
 export async function scrapeTVReleases(
   retryCount = 0,
 ): Promise<ReleaseCalendarItem[]> {
-  const MAX_RETRIES = 3;
-  const RETRY_DELAYS = [2000, 4000, 8000]; // 指数退避
-
   try {
-    // 添加随机延迟（模拟真实用户）
-    await randomDelay(500, 1500);
-
     const url = `${baseUrl}/dianshiju/shijianbiao/`;
 
     // 获取随机浏览器指纹
@@ -350,7 +333,7 @@ export async function scrapeTVReleases(
         'User-Agent': ua,
         Referer: baseUrl + '/',
       },
-      signal: AbortSignal.timeout(20000), // 20秒超时（增加到20秒）
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -364,12 +347,12 @@ export async function scrapeTVReleases(
     return items;
   } catch (error) {
     console.error(
-      `抓取电视剧数据失败 (重试 ${retryCount}/${MAX_RETRIES}):`,
+      `抓取电视剧数据失败 (重试 ${retryCount}/${MAX_SCRAPE_RETRIES}):`,
       error,
     );
 
     // 重试机制
-    if (retryCount < MAX_RETRIES) {
+    if (retryCount < MAX_SCRAPE_RETRIES) {
       console.warn(`等待 ${RETRY_DELAYS[retryCount]}ms 后重试...`);
       await new Promise((resolve) =>
         setTimeout(resolve, RETRY_DELAYS[retryCount]),
@@ -663,7 +646,7 @@ async function fetchHomepageHtmlWithFallback(
           ...headers,
           Referer: `${domain}/`,
         },
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
       });
 
       if (!response.ok) {
@@ -687,12 +670,7 @@ async function fetchHomepageHtmlWithFallback(
 export async function scrapeMovieHomepage(
   retryCount = 0,
 ): Promise<ReleaseCalendarItem[]> {
-  const MAX_RETRIES = 3;
-  const RETRY_DELAYS = [2000, 4000, 8000];
-
   try {
-    await randomDelay(500, 1500);
-
     // 使用 www.manmankan.com 而不是 g.manmankan.com
     const path = '/dy2013/dianying/';
 
@@ -719,11 +697,11 @@ export async function scrapeMovieHomepage(
     return items;
   } catch (error) {
     console.error(
-      `抓取电影首页数据失败 (重试 ${retryCount}/${MAX_RETRIES}):`,
+      `抓取电影首页数据失败 (重试 ${retryCount}/${MAX_SCRAPE_RETRIES}):`,
       error,
     );
 
-    if (retryCount < MAX_RETRIES) {
+    if (retryCount < MAX_SCRAPE_RETRIES) {
       console.warn(`等待 ${RETRY_DELAYS[retryCount]}ms 后重试...`);
       await new Promise((resolve) =>
         setTimeout(resolve, RETRY_DELAYS[retryCount]),
@@ -742,12 +720,7 @@ export async function scrapeMovieHomepage(
 export async function scrapeTVHomepage(
   retryCount = 0,
 ): Promise<ReleaseCalendarItem[]> {
-  const MAX_RETRIES = 3;
-  const RETRY_DELAYS = [2000, 4000, 8000];
-
   try {
-    await randomDelay(500, 1500);
-
     const path = '/dy2013/dianshiju/';
 
     const { ua, browser, platform } = getRandomUserAgentWithInfo();
@@ -773,11 +746,11 @@ export async function scrapeTVHomepage(
     return items;
   } catch (error) {
     console.error(
-      `抓取电视剧首页数据失败 (重试 ${retryCount}/${MAX_RETRIES}):`,
+      `抓取电视剧首页数据失败 (重试 ${retryCount}/${MAX_SCRAPE_RETRIES}):`,
       error,
     );
 
-    if (retryCount < MAX_RETRIES) {
+    if (retryCount < MAX_SCRAPE_RETRIES) {
       console.warn(`等待 ${RETRY_DELAYS[retryCount]}ms 后重试...`);
       await new Promise((resolve) =>
         setTimeout(resolve, RETRY_DELAYS[retryCount]),
@@ -791,43 +764,48 @@ export async function scrapeTVHomepage(
 }
 
 /**
- * 抓取所有数据（顺序执行，避免并发失败）
+ * 抓取所有数据。时间表两路使用受控的双并发；长期返回空数据的首页
+ * 来源只在对应时间表不可用时作为降级，不再拖慢每次正常刷新。
  */
 export async function scrapeAllReleases(): Promise<ReleaseCalendarItem[]> {
   try {
     console.log('📅 开始抓取发布日历数据...');
 
-    // 抓取电影时间表数据
-    console.log('🎬 抓取电影时间表数据...');
-    const movies = await scrapeMovieReleases();
-    console.log(`✅ 电影时间表数据抓取完成: ${movies.length} 部`);
+    const [movieResult, tvResult] = await Promise.allSettled([
+      scrapeMovieReleases(),
+      scrapeTVReleases(),
+    ]);
+    let movies = movieResult.status === 'fulfilled' ? movieResult.value : [];
+    let tvShows = tvResult.status === 'fulfilled' ? tvResult.value : [];
 
-    // 添加随机延迟
-    await randomDelay(2000, 4000);
+    if (movieResult.status === 'rejected') {
+      console.warn('电影时间表不可用，尝试首页降级源:', movieResult.reason);
+    }
+    if (tvResult.status === 'rejected') {
+      console.warn('电视剧时间表不可用，尝试首页降级源:', tvResult.reason);
+    }
 
-    // 抓取电影首页数据（包含2026年1月）
-    console.log('🎬 抓取电影首页数据（2026年）...');
-    const moviesHomepage = await scrapeMovieHomepage();
-    console.log(`✅ 电影首页数据抓取完成: ${moviesHomepage.length} 部`);
-
-    // 添加随机延迟
-    await randomDelay(2000, 4000);
-
-    // 抓取电视剧时间表数据
-    console.log('📺 抓取电视剧时间表数据...');
-    const tvShows = await scrapeTVReleases();
-    console.log(`✅ 电视剧时间表数据抓取完成: ${tvShows.length} 部`);
-
-    // 添加随机延迟
-    await randomDelay(2000, 4000);
-
-    // 抓取电视剧首页数据（包含2026年1月）
-    console.log('📺 抓取电视剧首页数据（2026年）...');
-    const tvHomepage = await scrapeTVHomepage();
-    console.log(`✅ 电视剧首页数据抓取完成: ${tvHomepage.length} 部`);
+    const fallbacks: Promise<void>[] = [];
+    if (movies.length === 0) {
+      fallbacks.push(
+        scrapeMovieHomepage().then((items) => {
+          movies = items;
+        }),
+      );
+    }
+    if (tvShows.length === 0) {
+      fallbacks.push(
+        scrapeTVHomepage().then((items) => {
+          tvShows = items;
+        }),
+      );
+    }
+    if (fallbacks.length > 0) {
+      await Promise.allSettled(fallbacks);
+    }
 
     // 合并所有数据，去重（按title和releaseDate去重）
-    const allItems = [...movies, ...moviesHomepage, ...tvShows, ...tvHomepage];
+    const allItems = [...movies, ...tvShows];
     if (allItems.length === 0) {
       throw new Error('Release calendar upstreams returned no usable data');
     }

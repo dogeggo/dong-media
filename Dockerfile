@@ -60,7 +60,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 # 创建统一媒体缓存目录并设置权限
-RUN mkdir -p /app/cache/image-v2 /app/cache/video-v2 && \
+RUN mkdir -p /app/cache/image /app/cache/video && \
     chown -R nextjs:nodejs /app/cache
 
 # 使用 root 用户启动，避免宿主机挂载缓存目录权限导致写入失败

@@ -210,6 +210,30 @@ test('same-key concurrent misses execute one loader', async () => {
   );
 });
 
+test('cache-only reads never invoke a loader and preserve stale values', async () => {
+  let now = 1_000;
+  const cache = service({ now: () => now, random: () => 0 });
+  const params = { id: 'cached-only' };
+
+  assert.equal(await cache.getCachedResult(basePolicy, params), null);
+  await cache.set(basePolicy, params, { ok: true });
+
+  const fresh = await cache.getCachedResult<{ ok: boolean }>(
+    basePolicy,
+    params,
+  );
+  assert.equal(fresh?.status, 'HIT');
+  assert.deepEqual(fresh?.value, { ok: true });
+
+  now += 11_000;
+  const stale = await cache.getCachedResult<{ ok: boolean }>(
+    basePolicy,
+    params,
+  );
+  assert.equal(stale?.status, 'STALE');
+  assert.deepEqual(stale?.value, { ok: true });
+});
+
 test('generation invalidation changes the key on its first increment', async () => {
   const shared = new FakeSharedCache();
   const cache = service({ shared });

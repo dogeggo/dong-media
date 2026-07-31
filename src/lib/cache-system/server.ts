@@ -55,6 +55,51 @@ export class CacheService {
     return (await this.getOrLoadResult(policy, params, loader, options)).value;
   }
 
+  /**
+   * Reads an existing cache entry without invoking a loader or scheduling a
+   * refresh. This is useful for latency-sensitive routes that must never make
+   * an end user wait for an expensive origin refresh.
+   */
+  async getCachedResult<T>(
+    policy: CachePolicy,
+    params: unknown,
+    options: Pick<CacheLoadOptions<T>, 'scope'> = {},
+  ): Promise<CacheResult<T> | null> {
+    this.validateScope(policy, options.scope);
+    const generation = await this.getGeneration(policy.namespace);
+    const key = buildCacheKey(policy, params, {
+      scope: options.scope,
+      generation,
+    });
+    const now = this.now();
+
+    if (policy.layers.includes('memory')) {
+      const entry = this.memory.get<T>(key, now);
+      if (entry) {
+        const status = entry.freshUntil > now ? 'HIT' : 'STALE';
+        this.metrics.recordRead(policy.namespace, status);
+        return this.result(key, policy, entry, 'L1', status, now);
+      }
+    }
+
+    if (policy.layers.includes('shared')) {
+      try {
+        const entry = await this.shared.get<T>(key);
+        if (entry && entry.staleUntil > now) {
+          if (policy.layers.includes('memory')) this.memory.set(key, entry);
+          const status = entry.freshUntil > now ? 'HIT' : 'STALE';
+          this.metrics.recordRead(policy.namespace, status);
+          return this.result(key, policy, entry, 'L2', status, now);
+        }
+      } catch {
+        this.metrics.recordError(policy.namespace);
+      }
+    }
+
+    this.metrics.recordRead(policy.namespace, 'MISS');
+    return null;
+  }
+
   async getOrLoadResult<T>(
     policy: CachePolicy,
     params: unknown,
