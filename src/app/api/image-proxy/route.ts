@@ -173,6 +173,7 @@ async function fetchImage(parsed: URL) {
     throw error;
   }
   if (!data.byteLength) throw new ImageProxyError('Image is empty', 502);
+  console.log(`图片代理拉取. url = ${parsed.toString()}`);
   return {
     data,
     contentType: normalizeMediaContentType(contentType),
