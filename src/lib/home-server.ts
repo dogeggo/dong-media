@@ -1,12 +1,16 @@
 import 'server-only';
 
 import { CACHE_POLICIES, cacheService } from '@/lib/cache-system';
-import { getDoubanCategories, getDoubanDetails } from '@/lib/douban-api';
+import {
+  fetchDoubanHeroBackdrop,
+  getDoubanCategories,
+  getDoubanDetails,
+} from '@/lib/douban-api';
 import type { DoubanMovieDetail, DoubanResult } from '@/lib/types';
 import type { InitialHomeRecommendations } from '@/hooks/useHomeRecommendations';
 
 const CATEGORY_TIMEOUT_MS = 2_500;
-const HERO_DETAIL_TIMEOUT_MS = 1_000;
+const HERO_DETAIL_TIMEOUT_MS = 1_500;
 
 const HOME_CATEGORIES = {
   hotAnime: {
@@ -71,16 +75,34 @@ async function loadHeroDetail(
   item: DoubanMovieDetail | undefined,
 ): Promise<DoubanMovieDetail | undefined> {
   if (!item?.id) return undefined;
-  const result = await withinTimeout(
-    cacheService.getOrLoad(
-      CACHE_POLICIES.DOUBAN_DETAILS,
-      { id: item.id },
-      () => getDoubanDetails(item.id),
-      { isNegative: (value: DoubanResult) => !value.list?.length },
+  const [result, heroMedia] = await Promise.all([
+    withinTimeout(
+      cacheService.getOrLoad(
+        CACHE_POLICIES.DOUBAN_DETAILS,
+        { id: item.id },
+        () => getDoubanDetails(item.id),
+        { isNegative: (value: DoubanResult) => !value.list?.length },
+      ),
+      HERO_DETAIL_TIMEOUT_MS,
     ),
-    HERO_DETAIL_TIMEOUT_MS,
-  );
-  return result?.list?.[0];
+    withinTimeout(
+      cacheService.getOrLoad(
+        CACHE_POLICIES.DOUBAN_HERO_BACKDROP,
+        { id: item.id },
+        async () => ({
+          backdrop: await fetchDoubanHeroBackdrop(item.id),
+        }),
+        { isNegative: (value) => !value.backdrop },
+      ),
+      HERO_DETAIL_TIMEOUT_MS,
+    ),
+  ]);
+  const detail = result?.list?.[0];
+  if (!detail) return undefined;
+  return {
+    ...detail,
+    backdrop: heroMedia?.backdrop || detail.backdrop,
+  };
 }
 
 /**

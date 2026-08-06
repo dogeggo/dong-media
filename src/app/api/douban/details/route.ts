@@ -7,6 +7,7 @@ import {
 } from '@/lib/cache-system';
 import {
   DoubanError,
+  fetchDoubanHeroBackdrop,
   fetchTrailerWithRetry,
   getDoubanDetails,
 } from '@/lib/douban-api';
@@ -27,19 +28,29 @@ export async function GET(request: Request) {
   }
 
   try {
-    const [details, mobileData] = await Promise.all([
+    const [details, mobileData, heroMedia] = await Promise.all([
       cacheService.getOrLoad(
         CACHE_POLICIES.DOUBAN_DETAILS,
         { id },
         () => getDoubanDetails(id),
         { isNegative: (value) => !value.list?.length },
       ),
-      cacheService.getOrLoad(
-        CACHE_POLICIES.DOUBAN_TRAILER,
-        { id },
-        () => fetchTrailerWithRetry(id, 0, false),
-        { isNegative: (value) => !value.trailerUrl },
-      ),
+      cacheService
+        .getOrLoad(
+          CACHE_POLICIES.DOUBAN_TRAILER,
+          { id },
+          () => fetchTrailerWithRetry(id, 0, false),
+          { isNegative: (value) => !value.trailerUrl },
+        )
+        .catch(() => ({ trailerUrl: undefined, backdrop: undefined })),
+      cacheService
+        .getOrLoad(
+          CACHE_POLICIES.DOUBAN_HERO_BACKDROP,
+          { id },
+          async () => ({ backdrop: await fetchDoubanHeroBackdrop(id) }),
+          { isNegative: (value) => !value.backdrop },
+        )
+        .catch(() => ({ backdrop: undefined })),
     ]);
 
     const result = {
@@ -49,7 +60,8 @@ export async function GET(request: Request) {
           ? {
               ...item,
               trailerUrl: mobileData.trailerUrl,
-              backdrop: item.backdrop || mobileData.backdrop,
+              backdrop:
+                heroMedia.backdrop || mobileData.backdrop || item.backdrop,
             }
           : item,
       ),

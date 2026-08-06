@@ -44,6 +44,16 @@ export const CACHE_POLICIES = {
     maxEntryBytes: 2 * MiB,
     tags: ['douban'],
   }),
+  DOUBAN_HERO_BACKDROP: policy({
+    namespace: 'douban.hero-backdrop',
+    scope: 'public',
+    freshTtlSeconds: 7 * 24 * 60 * 60,
+    staleTtlSeconds: 24 * 60 * 60,
+    negativeTtlSeconds: 30 * 60,
+    layers: ['memory', 'shared'],
+    maxEntryBytes: 64 * KiB,
+    tags: ['douban'],
+  }),
   DOUBAN_TRAILER: policy({
     namespace: 'douban.trailer',
     scope: 'public',

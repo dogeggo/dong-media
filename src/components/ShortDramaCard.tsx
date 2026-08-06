@@ -206,7 +206,7 @@ function ShortDramaCard({
           )}
 
           {/* 评分 - 使用vote_average字段 */}
-          {drama.vote_average && drama.vote_average > 0 && (
+          {typeof drama.vote_average === 'number' && drama.vote_average > 0 && (
             <div className='absolute top-2 right-2 flex items-center rounded-lg bg-linear-to-br from-yellow-400 to-orange-500 px-2.5 py-1.5 text-xs font-bold text-white shadow-lg backdrop-blur-sm ring-2 ring-white/30 transition-all duration-300 group-hover:scale-110'>
               <Star className='h-3 w-3 mr-1 fill-current' />
               {drama.vote_average.toFixed(1)}

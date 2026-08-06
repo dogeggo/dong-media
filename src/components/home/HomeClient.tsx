@@ -639,6 +639,7 @@ export default function HomeClient({ recommendations }: HomeClientProps) {
                       autoPlayInterval={8000}
                       showControls={true}
                       showIndicators={true}
+                      enableVideo={true}
                     />
                   ) : (
                     <div

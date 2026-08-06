@@ -50,6 +50,71 @@ function getBackdropFromMobileData(data: any): string | undefined {
   return backdrop;
 }
 
+interface DoubanPhotoImage {
+  height?: number;
+  url?: string;
+  width?: number;
+}
+
+interface DoubanPhotoItem {
+  image?: {
+    large?: DoubanPhotoImage;
+    raw?: DoubanPhotoImage | null;
+  };
+  likers_count?: number;
+}
+
+interface DoubanPhotosResponse {
+  photos?: DoubanPhotoItem[];
+}
+
+export async function fetchDoubanHeroBackdrop(
+  id: string,
+): Promise<string | undefined> {
+  const { fetchDoubanWithAntiScraping } =
+    await import('@/lib/douban-challenge');
+
+  for (const kind of ['movie', 'tv'] as const) {
+    const url = `https://m.douban.com/rexxar/api/v2/${kind}/${id}/photos?type=S&start=0&count=12`;
+    const response = await fetchDoubanWithAntiScraping(url, {
+      timeoutMs: 5_000,
+      redirect: 'manual',
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      continue;
+    }
+
+    const data = (await response.json()) as DoubanPhotosResponse;
+    const candidates = (data.photos || [])
+      .map((photo) => {
+        const image = photo.image?.raw || photo.image?.large;
+        return {
+          height: image?.height || 0,
+          likers: photo.likers_count || 0,
+          url: image?.url,
+          width: image?.width || 0,
+        };
+      })
+      .filter(
+        (image) =>
+          image.url &&
+          image.width >= 1_200 &&
+          image.width / Math.max(image.height, 1) >= 1.25,
+      )
+      .sort(
+        (left, right) =>
+          right.width * right.height - left.width * left.height ||
+          right.likers - left.likers,
+      );
+
+    const backdrop = candidates[0]?.url;
+    if (backdrop) return backdrop.replace(/^http:/, 'https:');
+  }
+
+  return undefined;
+}
+
 type TrailerWithBackdrop = {
   trailerUrl?: string;
   backdrop?: string;
@@ -149,7 +214,7 @@ export async function getDoubanCategories(
     const list: DoubanMovieDetail[] = doubanData.items.map((item) => ({
       id: item.id,
       title: item.title,
-      poster: item.pic?.normal || item.pic?.large || '',
+      poster: item.pic?.large || item.pic?.normal || '',
       rate: item.rating?.value ? item.rating.value.toFixed(1) : '',
       year: item.card_subtitle?.match(/(\d{4})/)?.[1] || '',
     }));
@@ -283,7 +348,7 @@ export async function getDoubanRecommends(
       .map((item) => ({
         id: item.id,
         title: item.title,
-        poster: item.pic?.normal || item.pic?.large || '',
+        poster: item.pic?.large || item.pic?.normal || '',
         rate: item.rating?.value ? item.rating.value.toFixed(1) : '',
         year: item.year,
       }));

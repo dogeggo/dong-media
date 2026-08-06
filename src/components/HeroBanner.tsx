@@ -1,9 +1,22 @@
 'use client';
 
-import { ChevronLeft, ChevronRight, Info, Play } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Info,
+  Play,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  type SyntheticEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 
 import { processImageUrl } from '@/lib/image-url';
 
@@ -28,31 +41,69 @@ interface HeroBannerProps {
   autoPlayInterval?: number;
   showControls?: boolean;
   showIndicators?: boolean;
+  enableVideo?: boolean;
 }
+
+interface NetworkInformation {
+  effectiveType?: string;
+  saveData?: boolean;
+}
+
+interface DoubanDetailResponse {
+  list?: Array<{
+    title?: string;
+    poster?: string;
+    backdrop?: string;
+    plot_summary?: string;
+    year?: string;
+    rate?: string;
+    trailerUrl?: string;
+  }>;
+}
+
+type LowPriorityRequestInit = RequestInit & { priority?: 'low' };
+
+const HERO_VIDEO_DELAY_MS = 4_000;
+const CONSTRAINED_HERO_VIDEO_DELAY_MS = 8_000;
+const HERO_DETAILS_DELAY_MS = 500;
 
 const getHDBackdrop = (url?: string) => {
   if (!url) return url;
   return url
     .replace('/view/photo/s/', '/view/photo/l/')
     .replace('/view/photo/m/', '/view/photo/l/')
-    .replace('/view/photo/sqxs/', '/view/photo/l/');
+    .replace('/view/photo/sqxs/', '/view/photo/l/')
+    .replace('/s_ratio_poster/', '/l_ratio_poster/')
+    .replace('/m_ratio_poster/', '/l_ratio_poster/');
 };
 
 const getImageUrl = (item: BannerItem) => {
-  const rawUrl = item.backdrop ? getHDBackdrop(item.backdrop) : item.poster;
+  const rawUrl = getHDBackdrop(item.backdrop || item.poster);
   return processImageUrl(rawUrl || item.poster);
 };
+
+const hasHeroDetails = (item: BannerItem) =>
+  Boolean(item.description && item.backdrop);
 
 function BannerImage({
   src,
   alt,
+  isBackdrop,
   isPriority,
 }: {
   src: string;
   alt: string;
+  isBackdrop: boolean;
   isPriority: boolean;
 }) {
   const [loaded, setLoaded] = useState(false);
+  const [useContain, setUseContain] = useState(!isBackdrop);
+
+  const handleLoad = (event: SyntheticEvent<HTMLImageElement>) => {
+    const image = event.currentTarget;
+    setUseContain(image.naturalWidth / Math.max(image.naturalHeight, 1) < 1.25);
+    setLoaded(true);
+  };
 
   return (
     <div className='pointer-events-none absolute inset-0'>
@@ -60,13 +111,17 @@ function BannerImage({
         src={src}
         alt={alt}
         fill
-        className='object-cover object-center'
+        className={
+          useContain
+            ? 'object-contain object-center sm:object-right'
+            : 'object-cover object-center'
+        }
         preload={isPriority}
         loading={isPriority ? undefined : 'lazy'}
         fetchPriority={isPriority ? 'high' : 'low'}
-        quality={75}
+        quality={85}
         sizes='100vw'
-        onLoad={() => setLoaded(true)}
+        onLoad={handleLoad}
       />
       <div
         className={`pointer-events-none absolute inset-0 bg-gray-950 transition-opacity duration-150 motion-reduce:transition-none ${
@@ -77,15 +132,64 @@ function BannerImage({
   );
 }
 
+function BannerVideo({
+  doubanId,
+  isMuted,
+  onReady,
+}: {
+  doubanId: number;
+  isMuted: boolean;
+  onReady: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.muted = isMuted;
+  }, [isMuted]);
+
+  const handleCanPlay = () => {
+    setLoaded(true);
+    onReady();
+  };
+
+  return (
+    <video
+      ref={videoRef}
+      className={`pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-700 motion-reduce:transition-none ${
+        loaded ? 'opacity-100' : 'opacity-0'
+      }`}
+      autoPlay
+      muted={isMuted}
+      loop
+      playsInline
+      preload='none'
+      onCanPlay={handleCanPlay}
+      onError={() => setLoaded(false)}
+      src={`/api/video-proxy?id=${doubanId}&carousel=1`}
+    />
+  );
+}
+
 export default function HeroBanner({
   items,
   autoPlayInterval = 8000,
   showControls = true,
   showIndicators = true,
+  enableVideo = true,
 }: HeroBannerProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isHovered, setIsHovered] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
+  const [detailsById, setDetailsById] = useState<
+    Record<string, Partial<BannerItem>>
+  >({});
+  const [videoReadyId, setVideoReadyId] = useState<number | null>(null);
+  const [videoPlayingId, setVideoPlayingId] = useState<number | null>(null);
+  const detailRequestsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const loadedDetailIdsRef = useRef<Set<string>>(new Set());
+  const mountedRef = useRef(true);
   const transitionTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -94,12 +198,180 @@ export default function HeroBanner({
 
   useEffect(
     () => () => {
+      mountedRef.current = false;
       if (transitionTimerRef.current !== null) {
         window.clearTimeout(transitionTimerRef.current);
       }
     },
     [],
   );
+
+  const loadItemDetails = useCallback(
+    (item: BannerItem, lowPriority: boolean, signal?: AbortSignal) => {
+      const id = String(item.douban_id || item.id);
+      if (!item.douban_id || loadedDetailIdsRef.current.has(id)) {
+        return Promise.resolve();
+      }
+
+      const existingRequest = detailRequestsRef.current.get(id);
+      if (existingRequest) return existingRequest;
+
+      const requestInit: LowPriorityRequestInit = { signal };
+      if (lowPriority) requestInit.priority = 'low';
+
+      const request = fetch(
+        `/api/douban/details?id=${encodeURIComponent(String(item.douban_id))}`,
+        requestInit,
+      )
+        .then(async (response) => {
+          if (!response.ok) return;
+          const result = (await response.json()) as DoubanDetailResponse;
+          const detail = result.list?.[0];
+          if (!detail) return;
+
+          loadedDetailIdsRef.current.add(id);
+          if (!mountedRef.current) return;
+          setDetailsById((current) => ({
+            ...current,
+            [id]: {
+              title: detail.title || item.title,
+              description: detail.plot_summary || item.description,
+              poster: detail.poster || item.poster,
+              backdrop: detail.backdrop || item.backdrop,
+              year: detail.year || item.year,
+              rate: detail.rate || item.rate,
+              trailerUrl: detail.trailerUrl || item.trailerUrl,
+            },
+          }));
+        })
+        // 详情加载失败时保留分类数据，不影响轮播和后续视频降级。
+        .catch(() => undefined)
+        .finally(() => {
+          detailRequestsRef.current.delete(id);
+        });
+
+      detailRequestsRef.current.set(id, request);
+      return request;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const item = items[currentIndex];
+    if (!item || hasHeroDetails(item)) return;
+    void loadItemDetails(item, false);
+  }, [currentIndex, items, loadItemDetails]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let delayTimer: number | null = null;
+    let idleCallback: number | null = null;
+    let scheduled = false;
+
+    const loadRemainingDetails = async () => {
+      for (const item of items.slice(1)) {
+        if (controller.signal.aborted) return;
+        if (!hasHeroDetails(item)) {
+          await loadItemDetails(item, true, controller.signal);
+        }
+      }
+    };
+
+    const scheduleDetails = () => {
+      if (scheduled || controller.signal.aborted || document.hidden) return;
+      scheduled = true;
+      delayTimer = window.setTimeout(() => {
+        delayTimer = null;
+        if ('requestIdleCallback' in window) {
+          idleCallback = window.requestIdleCallback(
+            () => void loadRemainingDetails(),
+            { timeout: 2_500 },
+          );
+        } else {
+          void loadRemainingDetails();
+        }
+      }, HERO_DETAILS_DELAY_MS);
+    };
+
+    const handleLoad = () => scheduleDetails();
+    const handleVisibilityChange = () => {
+      if (!document.hidden) scheduleDetails();
+    };
+
+    if (document.readyState === 'complete') scheduleDetails();
+    else window.addEventListener('load', handleLoad, { once: true });
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      controller.abort();
+      window.removeEventListener('load', handleLoad);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (delayTimer !== null) window.clearTimeout(delayTimer);
+      if (idleCallback !== null) window.cancelIdleCallback(idleCallback);
+    };
+  }, [items, loadItemDetails]);
+
+  const currentBaseItem = items[currentIndex];
+  const currentItem = currentBaseItem
+    ? {
+        ...currentBaseItem,
+        ...detailsById[String(currentBaseItem.douban_id || currentBaseItem.id)],
+      }
+    : undefined;
+
+  useEffect(() => {
+    if (!enableVideo || !currentItem?.douban_id) return;
+
+    const doubanId = currentItem.douban_id;
+    const connection = (
+      navigator as Navigator & { connection?: NetworkInformation }
+    ).connection;
+    if (connection?.saveData) return;
+
+    const constrainedNetwork =
+      connection?.effectiveType === 'slow-2g' ||
+      connection?.effectiveType === '2g';
+    let delayTimer: number | null = null;
+    let idleCallback: number | null = null;
+    let scheduled = false;
+
+    const scheduleVideo = () => {
+      if (scheduled || document.hidden) return;
+      scheduled = true;
+      delayTimer = window.setTimeout(
+        () => {
+          delayTimer = null;
+          const markReady = () => setVideoReadyId(doubanId);
+          if ('requestIdleCallback' in window) {
+            idleCallback = window.requestIdleCallback(markReady, {
+              timeout: 5_000,
+            });
+          } else {
+            markReady();
+          }
+        },
+        constrainedNetwork
+          ? CONSTRAINED_HERO_VIDEO_DELAY_MS
+          : HERO_VIDEO_DELAY_MS,
+      );
+    };
+
+    const handleLoad = () => scheduleVideo();
+    const handleVisibilityChange = () => {
+      if (!document.hidden) scheduleVideo();
+    };
+
+    if (document.readyState === 'complete') scheduleVideo();
+    else window.addEventListener('load', handleLoad, { once: true });
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('load', handleLoad);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (delayTimer !== null) window.clearTimeout(delayTimer);
+      if (idleCallback !== null) window.cancelIdleCallback(idleCallback);
+    };
+  }, [currentItem?.douban_id, enableVideo]);
 
   const finishTransitionLater = useCallback(() => {
     if (transitionTimerRef.current !== null) {
@@ -145,9 +417,12 @@ export default function HeroBanner({
     onSwipeRight: handlePrev,
   });
 
-  if (items.length === 0) return null;
+  if (!currentItem) return null;
 
-  const currentItem = items[currentIndex];
+  const currentImageUrl = getImageUrl(currentItem);
+  const shouldMountVideo =
+    enableVideo && videoReadyId === currentItem.douban_id;
+  const isCurrentVideoPlaying = videoPlayingId === currentItem.douban_id;
   return (
     <div
       className='group relative h-[50vh] w-full overflow-hidden sm:h-[55vh] md:h-[60vh]'
@@ -157,11 +432,21 @@ export default function HeroBanner({
     >
       <div className='pointer-events-none absolute inset-0'>
         <BannerImage
-          key={currentItem.id}
-          src={getImageUrl(currentItem)}
+          key={currentImageUrl}
+          src={currentImageUrl}
           alt={currentItem.title}
+          isBackdrop={Boolean(currentItem.backdrop)}
           isPriority={currentIndex === 0}
         />
+
+        {shouldMountVideo && currentItem.douban_id && (
+          <BannerVideo
+            key={currentItem.douban_id}
+            doubanId={currentItem.douban_id}
+            isMuted={isMuted}
+            onReady={() => setVideoPlayingId(currentItem.douban_id!)}
+          />
+        )}
 
         <div className='absolute inset-0 bg-gradient-to-t from-black via-black/40 to-black/80' />
         <div className='absolute inset-0 bg-gradient-to-r from-black/60 via-transparent to-transparent' />
@@ -243,6 +528,20 @@ export default function HeroBanner({
           </div>
         </div>
       </div>
+
+      {isCurrentVideoPlaying && (
+        <button
+          onClick={() => setIsMuted((muted) => !muted)}
+          className='absolute right-4 bottom-6 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white/50 bg-black/50 text-white backdrop-blur-sm transition-all hover:bg-black/70 sm:right-8 sm:bottom-8 sm:h-12 sm:w-12 md:right-12 lg:right-16'
+          aria-label={isMuted ? '取消静音' : '静音'}
+        >
+          {isMuted ? (
+            <VolumeX className='h-5 w-5 sm:h-6 sm:w-6' />
+          ) : (
+            <Volume2 className='h-5 w-5 sm:h-6 sm:w-6' />
+          )}
+        </button>
+      )}
 
       {showControls && items.length > 1 && (
         <>
