@@ -9,7 +9,8 @@ import { getQueryClient } from './get-query-client';
 import { createSingleFlight } from './single-flight';
 import { getCurrentUserDataScope, userQueryKeys } from './user-query-keys';
 
-const WATCHING_UPDATES_STALE_TIME = 5 * 60 * 1_000;
+const WATCHING_UPDATES_STALE_TIME = 30 * 60 * 1_000;
+const WATCHING_UPDATES_CONCURRENCY = 4;
 
 export const WATCHING_UPDATES_EVENT = 'watchingUpdatesChanged';
 
@@ -76,40 +77,53 @@ export function checkWatchingUpdates(forceRefresh = false): Promise<void> {
 }
 
 async function calculateWatchingUpdates(): Promise<WatchingUpdate> {
-  const recordsByKey = await getAllPlayRecords();
+  const scope = getCurrentUserDataScope();
+  const recordsByKey =
+    getQueryClient().getQueryData<Record<string, PlayRecord>>(
+      userQueryKeys.playRecords(scope),
+    ) || (await getAllPlayRecords());
   const candidates = Object.entries(recordsByKey)
     .map(([key, record]) => ({ key, record }))
     .filter(({ record }) => record.total_episodes > 1);
   if (candidates.length === 0) return emptyWatchingUpdate();
 
   const sources = await loadSources();
-  const updatedSeries = await Promise.all(
-    candidates.map(async ({ key, record }) => {
-      const { sourceKey, videoId } = splitStorageKey(key);
-      const status = await checkSingleRecordUpdate(
-        record,
-        videoId,
-        sourceKey,
-        sources,
-      );
-      return {
-        title: record.title,
-        source_name: record.source_name,
-        year: record.year,
-        cover: record.cover,
-        sourceKey,
-        videoId,
-        currentEpisode: record.index,
-        totalEpisodes: status.latestEpisodes,
-        hasNewEpisode: status.hasUpdate,
-        hasContinueWatching: status.hasContinueWatching,
-        newEpisodes: status.newEpisodes,
-        remainingEpisodes: status.remainingEpisodes,
-        latestEpisodes: status.latestEpisodes,
-        remarks: record.remarks,
-      };
-    }),
-  );
+  const updatedSeries: WatchingUpdate['updatedSeries'] = [];
+  for (
+    let index = 0;
+    index < candidates.length;
+    index += WATCHING_UPDATES_CONCURRENCY
+  ) {
+    const batch = candidates.slice(index, index + WATCHING_UPDATES_CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async ({ key, record }) => {
+        const { sourceKey, videoId } = splitStorageKey(key);
+        const status = await checkSingleRecordUpdate(
+          record,
+          videoId,
+          sourceKey,
+          sources,
+        );
+        return {
+          title: record.title,
+          source_name: record.source_name,
+          year: record.year,
+          cover: record.cover,
+          sourceKey,
+          videoId,
+          currentEpisode: record.index,
+          totalEpisodes: status.latestEpisodes,
+          hasNewEpisode: status.hasUpdate,
+          hasContinueWatching: status.hasContinueWatching,
+          newEpisodes: status.newEpisodes,
+          remainingEpisodes: status.remainingEpisodes,
+          latestEpisodes: status.latestEpisodes,
+          remarks: record.remarks,
+        };
+      }),
+    );
+    updatedSeries.push(...results);
+  }
 
   updatedSeries.sort((left, right) => {
     if (left.hasNewEpisode !== right.hasNewEpisode) {

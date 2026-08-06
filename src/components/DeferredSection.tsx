@@ -27,7 +27,7 @@ export default function DeferredSection({
   className = '',
   eager = false,
   placeholderClassName = 'min-h-[22rem] sm:min-h-[28rem]',
-  rootMargin = '500px 0px',
+  rootMargin = '160px 0px',
 }: DeferredSectionProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [shouldRender, setShouldRender] = useState(eager);

@@ -1,17 +1,19 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { useMemo } from 'react';
 
 import {
   fetchHomeBangumi,
   fetchHomeDoubanCategory,
-  fetchHomeDoubanDetail,
   fetchHomeShortDramas,
   fetchHomeUpcoming,
   HomeApiError,
 } from '@/lib/home-api';
-import type { DoubanMovieDetail } from '@/lib/types';
+import type {
+  HomeBangumiItem,
+  HomeUpcomingItem,
+} from '@/lib/home-recommendations';
+import type { DoubanMovieDetail, ShortDramaItem } from '@/lib/types';
 
 export type HomeSectionKey =
   | 'anime'
@@ -22,6 +24,16 @@ export type HomeSectionKey =
   | 'upcoming'
   | 'variety';
 
+export interface InitialHomeRecommendations {
+  hotAnime?: DoubanMovieDetail[];
+  hotMovies?: DoubanMovieDetail[];
+  hotShortDramas?: ShortDramaItem[];
+  hotTvShows?: DoubanMovieDetail[];
+  hotVarietyShows?: DoubanMovieDetail[];
+  todayAnimes?: HomeBangumiItem[];
+  upcomingReleases?: HomeUpcomingItem[];
+}
+
 const HOME_STALE_TIME = 5 * 60 * 1_000;
 const HOME_GC_TIME = 2 * 60 * 60 * 1_000;
 
@@ -29,8 +41,6 @@ export const homeQueryKeys = {
   root: ['home', 'recommendations'] as const,
   category: (name: 'anime' | 'movies' | 'tv' | 'variety') =>
     [...homeQueryKeys.root, 'category', name] as const,
-  heroDetails: (ids: string[]) =>
-    [...homeQueryKeys.root, 'hero-details', ...ids] as const,
   shortDramas: () => [...homeQueryKeys.root, 'short-dramas'] as const,
   bangumi: () => [...homeQueryKeys.root, 'bangumi-today'] as const,
   upcoming: () => [...homeQueryKeys.root, 'upcoming'] as const,
@@ -40,8 +50,14 @@ function shouldRetry(failureCount: number, error: Error) {
   if (error instanceof HomeApiError && error.code === 'WARMING') {
     return failureCount < 6;
   }
-  if (error instanceof HomeApiError && error.status === 401) return false;
-  return failureCount < 2;
+  if (
+    error instanceof HomeApiError &&
+    error.status >= 400 &&
+    error.status < 500
+  ) {
+    return false;
+  }
+  return failureCount < 1;
 }
 
 function retryDelay(attempt: number, error: Error) {
@@ -54,44 +70,18 @@ function retryDelay(attempt: number, error: Error) {
 const commonQueryOptions = {
   staleTime: HOME_STALE_TIME,
   gcTime: HOME_GC_TIME,
-  refetchOnMount: 'always' as const,
   retry: shouldRetry,
   retryDelay,
 };
-
-function mergeDetails(
-  items: DoubanMovieDetail[],
-  details: Map<string, DoubanMovieDetail>,
-) {
-  return items.map((item) => {
-    const detail = details.get(item.id);
-    return detail ? { ...item, ...detail } : item;
-  });
-}
 
 function errorWithoutData(error: Error | null, itemCount: number) {
   if (!error || itemCount > 0) return null;
   return error.message || '加载失败';
 }
 
-async function fetchHeroDetails(ids: string[], signal: AbortSignal) {
-  const entries: Array<[string, DoubanMovieDetail]> = [];
-  for (let index = 0; index < ids.length; index += 2) {
-    const batch = ids.slice(index, index + 2);
-    const results = await Promise.allSettled(
-      batch.map((id) => fetchHomeDoubanDetail(id, signal)),
-    );
-    if (signal.aborted) throw signal.reason;
-    results.forEach((result, resultIndex) => {
-      if (result.status === 'fulfilled' && result.value) {
-        entries.push([batch[resultIndex], result.value]);
-      }
-    });
-  }
-  return entries;
-}
-
-export function useHomeRecommendations() {
+export function useHomeRecommendations(
+  initialData: InitialHomeRecommendations = {},
+) {
   const moviesQuery = useQuery({
     queryKey: homeQueryKeys.category('movies'),
     queryFn: ({ signal }) =>
@@ -100,6 +90,7 @@ export function useHomeRecommendations() {
         signal,
       ),
     ...commonQueryOptions,
+    initialData: initialData.hotMovies,
   });
   const tvQuery = useQuery({
     queryKey: homeQueryKeys.category('tv'),
@@ -109,6 +100,7 @@ export function useHomeRecommendations() {
         signal,
       ),
     ...commonQueryOptions,
+    initialData: initialData.hotTvShows,
   });
   const varietyQuery = useQuery({
     queryKey: homeQueryKeys.category('variety'),
@@ -118,6 +110,7 @@ export function useHomeRecommendations() {
         signal,
       ),
     ...commonQueryOptions,
+    initialData: initialData.hotVarietyShows,
   });
   const animeQuery = useQuery({
     queryKey: homeQueryKeys.category('anime'),
@@ -127,67 +120,31 @@ export function useHomeRecommendations() {
         signal,
       ),
     ...commonQueryOptions,
+    initialData: initialData.hotAnime,
   });
   const shortDramasQuery = useQuery({
     queryKey: homeQueryKeys.shortDramas(),
     queryFn: ({ signal }) => fetchHomeShortDramas(signal),
     ...commonQueryOptions,
+    initialData: initialData.hotShortDramas,
   });
   const bangumiQuery = useQuery({
     queryKey: homeQueryKeys.bangumi(),
     queryFn: ({ signal }) => fetchHomeBangumi(signal),
     ...commonQueryOptions,
+    initialData: initialData.todayAnimes,
   });
   const upcomingQuery = useQuery({
     queryKey: homeQueryKeys.upcoming(),
     queryFn: ({ signal }) => fetchHomeUpcoming(signal),
     ...commonQueryOptions,
+    initialData: initialData.upcomingReleases,
   });
 
-  const baseMovies = moviesQuery.data || [];
-  const baseTvShows = tvQuery.data || [];
-  const baseVarietyShows = varietyQuery.data || [];
-  const baseAnime = animeQuery.data || [];
-  const detailIds = useMemo(
-    () =>
-      Array.from(
-        new Set([
-          ...baseMovies.slice(0, 2).map((item) => item.id),
-          ...baseTvShows.slice(0, 2).map((item) => item.id),
-          ...baseVarietyShows.slice(0, 1).map((item) => item.id),
-          ...baseAnime.slice(0, 1).map((item) => item.id),
-        ]),
-      ),
-    [baseAnime, baseMovies, baseTvShows, baseVarietyShows],
-  );
-  const heroDetailsQuery = useQuery({
-    queryKey: homeQueryKeys.heroDetails(detailIds),
-    queryFn: ({ signal }) => fetchHeroDetails(detailIds, signal),
-    enabled: detailIds.length > 0,
-    ...commonQueryOptions,
-    staleTime: 30 * 60 * 1_000,
-  });
-  const details = useMemo(
-    () => new Map(heroDetailsQuery.data || []),
-    [heroDetailsQuery.data],
-  );
-
-  const hotMovies = useMemo(
-    () => mergeDetails(baseMovies, details),
-    [baseMovies, details],
-  );
-  const hotTvShows = useMemo(
-    () => mergeDetails(baseTvShows, details),
-    [baseTvShows, details],
-  );
-  const hotVarietyShows = useMemo(
-    () => mergeDetails(baseVarietyShows, details),
-    [baseVarietyShows, details],
-  );
-  const hotAnime = useMemo(
-    () => mergeDetails(baseAnime, details),
-    [baseAnime, details],
-  );
+  const hotMovies = moviesQuery.data || [];
+  const hotTvShows = tvQuery.data || [];
+  const hotVarietyShows = varietyQuery.data || [];
+  const hotAnime = animeQuery.data || [];
 
   const hotShortDramas = shortDramasQuery.data || [];
   const todayAnimes = bangumiQuery.data || [];

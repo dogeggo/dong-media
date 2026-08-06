@@ -13,6 +13,7 @@ import NavigationLoading from '../components/NavigationLoading';
 import QueryProvider from '../components/QueryProvider';
 import { SiteProvider } from '../components/SiteProvider';
 import { ThemeProvider } from '../components/ThemeProvider';
+import { WebVitals } from '../components/WebVitals';
 import { DownloadProvider } from '../contexts/DownloadContext';
 import { NavigationLoadingProvider } from '../contexts/NavigationLoadingContext';
 
@@ -116,6 +117,7 @@ export default async function RootLayout({
             <NavigationLoadingProvider>
               <DownloadProvider>
                 <SiteProvider siteName={siteName} announcement={announcement}>
+                  <WebVitals />
                   {children}
                   <GlobalErrorIndicator />
                   <NavigationLoading />

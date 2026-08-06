@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 'use client';
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -79,44 +78,57 @@ export default function ContinueWatching({ className }: ContinueWatchingProps) {
       return;
     }
 
-    const updateWatchingUpdates = async () => {
-      console.log('ContinueWatching: 开始获取更新数据...');
+    const cachedUpdates = getDetailedWatchingUpdates();
+    if (cachedUpdates) setWatchingUpdates(cachedUpdates);
 
-      // 先尝试从缓存加载（快速显示）
-      let updates = getDetailedWatchingUpdates();
-      console.log('ContinueWatching: 缓存数据:', updates);
+    let cancelled = false;
+    let scheduled = false;
+    let delayTimer: number | null = null;
+    let idleCallback: number | null = null;
 
-      if (updates) {
-        setWatchingUpdates(updates);
-        console.log('ContinueWatching: 使用缓存数据');
-      }
-
-      // 仅在缓存为空时才主动检查更新，减少不必要的 API 请求
-      if (!updates) {
-        console.log('ContinueWatching: 缓存为空，主动检查更新...');
-        try {
-          await checkWatchingUpdates();
-          updates = getDetailedWatchingUpdates();
-          setWatchingUpdates(updates);
-          console.log('ContinueWatching: 主动检查完成，获得数据:', updates);
-        } catch (error) {
-          console.error('ContinueWatching: 主动检查更新失败:', error);
-        }
-      } else {
-        console.log('ContinueWatching: 缓存有效，跳过检查更新');
-      }
+    const runUpdateCheck = async () => {
+      scheduled = false;
+      if (cancelled || document.hidden) return;
+      await checkWatchingUpdates();
+      if (!cancelled) setWatchingUpdates(getDetailedWatchingUpdates());
     };
 
-    updateWatchingUpdates();
+    const scheduleUpdateCheck = () => {
+      if (cachedUpdates || cancelled || scheduled || document.hidden) return;
+      scheduled = true;
+      delayTimer = window.setTimeout(() => {
+        delayTimer = null;
+        if ('requestIdleCallback' in window) {
+          idleCallback = window.requestIdleCallback(runUpdateCheck, {
+            timeout: 4_000,
+          });
+        } else {
+          void runUpdateCheck();
+        }
+      }, 4_000);
+    };
+
+    const handleLoad = () => scheduleUpdateCheck();
+    const handleVisibilityChange = () => {
+      if (!document.hidden) scheduleUpdateCheck();
+    };
+
+    if (document.readyState === 'complete') scheduleUpdateCheck();
+    else window.addEventListener('load', handleLoad, { once: true });
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     // 订阅 watching updates 事件
     const unsubscribeWatchingUpdates = subscribeToWatchingUpdatesEvent(() => {
-      console.log('ContinueWatching: 收到 watching updates 更新事件');
       const updates = getDetailedWatchingUpdates();
       setWatchingUpdates(updates);
     });
 
     return () => {
+      cancelled = true;
+      window.removeEventListener('load', handleLoad);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (delayTimer !== null) window.clearTimeout(delayTimer);
+      if (idleCallback !== null) window.cancelIdleCallback(idleCallback);
       unsubscribeWatchingUpdates();
     };
   }, [isLoading, playRecords.length]);
@@ -224,7 +236,7 @@ export default function ContinueWatching({ className }: ContinueWatchingProps) {
               </div>
             ))
           : // 显示真实数据
-            playRecords.map((record, index) => {
+            playRecords.map((record) => {
               const { source, id } = parseKey(record.key);
               const newEpisodesCount = getNewEpisodesCount(record);
               const latestTotalEpisodes = getLatestTotalEpisodes(record);
@@ -259,7 +271,6 @@ export default function ContinueWatching({ className }: ContinueWatchingProps) {
                       }
                       type={latestTotalEpisodes > 1 ? 'tv' : ''}
                       remarks={record.remarks}
-                      priority={index < 6}
                     />
                   </div>
                   {/* 新集数徽章 - Netflix 统一风格 */}

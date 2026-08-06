@@ -110,6 +110,7 @@ function UpcomingLoadingSection() {
         />
         <Link
           href='/release-calendar'
+          prefetch={false}
           className='flex items-center text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
         >
           查看更多
@@ -172,6 +173,7 @@ const UpcomingSection = memo(function UpcomingSection({
         />
         <Link
           href='/release-calendar'
+          prefetch={false}
           className='flex items-center text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
         >
           查看更多
@@ -271,6 +273,7 @@ const MovieSection = memo(function MovieSection({
         <SectionTitle title='热门电影' icon={Film} iconColor='text-red-500' />
         <Link
           href='/douban?type=movie'
+          prefetch={false}
           className='flex items-center text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
         >
           查看更多
@@ -321,6 +324,7 @@ const TvSection = memo(function TvSection({
         <SectionTitle title='热门剧集' icon={Tv} iconColor='text-primary-500' />
         <Link
           href='/douban?type=tv'
+          prefetch={false}
           className='flex items-center text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
         >
           查看更多
@@ -375,6 +379,7 @@ const BangumiSection = memo(function BangumiSection({
         />
         <Link
           href='/douban?type=anime'
+          prefetch={false}
           className='flex items-center text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
         >
           查看更多
@@ -429,6 +434,7 @@ const VarietySection = memo(function VarietySection({
         />
         <Link
           href='/douban?type=show'
+          prefetch={false}
           className='flex items-center text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
         >
           查看更多
@@ -483,6 +489,7 @@ const ShortDramaSection = memo(function ShortDramaSection({
         />
         <Link
           href='/shortdrama'
+          prefetch={false}
           className='flex items-center text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
         >
           查看更多

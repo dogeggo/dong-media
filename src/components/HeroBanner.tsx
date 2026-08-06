@@ -1,13 +1,6 @@
 'use client';
 
-import {
-  ChevronLeft,
-  ChevronRight,
-  Info,
-  Play,
-  Volume2,
-  VolumeX,
-} from 'lucide-react';
+import { ChevronLeft, ChevronRight, Info, Play } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -35,30 +28,19 @@ interface HeroBannerProps {
   autoPlayInterval?: number;
   showControls?: boolean;
   showIndicators?: boolean;
-  enableVideo?: boolean;
 }
-
-interface NetworkInformation {
-  effectiveType?: string;
-  saveData?: boolean;
-}
-
-const MAX_VIDEO_RETRIES = 4;
-const VIDEO_RETRY_DELAY_MS = 5000;
 
 const getHDBackdrop = (url?: string) => {
   if (!url) return url;
   return url
     .replace('/view/photo/s/', '/view/photo/l/')
     .replace('/view/photo/m/', '/view/photo/l/')
-    .replace('/view/photo/sqxs/', '/view/photo/l/')
-    .replace('/s_ratio_poster/', '/l_ratio_poster/')
-    .replace('/m_ratio_poster/', '/l_ratio_poster/');
+    .replace('/view/photo/sqxs/', '/view/photo/l/');
 };
 
 const getImageUrl = (item: BannerItem) => {
-  const rawUrl = getHDBackdrop(item.backdrop || item.poster);
-  return rawUrl ? processImageUrl(rawUrl) : processImageUrl(item.poster);
+  const rawUrl = item.backdrop ? getHDBackdrop(item.backdrop) : item.poster;
+  return processImageUrl(rawUrl || item.poster);
 };
 
 function BannerImage({
@@ -74,81 +56,24 @@ function BannerImage({
 
   return (
     <div className='pointer-events-none absolute inset-0'>
-      {!loaded && (
-        <div className='pointer-events-none absolute inset-0 bg-black/10 motion-safe:animate-pulse' />
-      )}
       <Image
         src={src}
         alt={alt}
         fill
-        className={`object-cover object-center transition-opacity duration-700 ${
-          loaded ? 'opacity-100' : 'opacity-0'
-        }`}
-        priority={isPriority}
-        loading={isPriority ? 'eager' : 'lazy'}
-        quality={80}
+        className='object-cover object-center'
+        preload={isPriority}
+        loading={isPriority ? undefined : 'lazy'}
+        fetchPriority={isPriority ? 'high' : 'low'}
+        quality={75}
         sizes='100vw'
         onLoad={() => setLoaded(true)}
       />
+      <div
+        className={`pointer-events-none absolute inset-0 bg-gray-950 transition-opacity duration-150 motion-reduce:transition-none ${
+          loaded ? 'opacity-0' : 'opacity-100'
+        }`}
+      />
     </div>
-  );
-}
-
-function BannerVideo({
-  doubanId,
-  isMuted,
-}: {
-  doubanId: number;
-  isMuted: boolean;
-}) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const retryTimerRef = useRef<number | null>(null);
-  const [retryAttempt, setRetryAttempt] = useState(0);
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    if (videoRef.current) videoRef.current.muted = isMuted;
-  }, [isMuted]);
-
-  useEffect(
-    () => () => {
-      if (retryTimerRef.current !== null) {
-        window.clearTimeout(retryTimerRef.current);
-      }
-    },
-    [],
-  );
-
-  const handleError = () => {
-    setLoaded(false);
-    if (retryAttempt >= MAX_VIDEO_RETRIES || retryTimerRef.current !== null) {
-      return;
-    }
-
-    // carousel 首次请求可能返回 503 并在服务端后台预热。延迟重试，
-    // 不在主线程轮询，也不把完整视频复制进 Cache Storage。
-    retryTimerRef.current = window.setTimeout(() => {
-      retryTimerRef.current = null;
-      setRetryAttempt((attempt) => attempt + 1);
-    }, VIDEO_RETRY_DELAY_MS);
-  };
-
-  return (
-    <video
-      key={retryAttempt}
-      ref={videoRef}
-      className={`pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-1000 ${
-        loaded ? 'opacity-100' : 'opacity-0'
-      }`}
-      autoPlay
-      muted={isMuted}
-      loop
-      playsInline
-      preload='metadata'
-      onCanPlay={() => setLoaded(true)}
-      onError={handleError}
-      src={`/api/video-proxy?id=${doubanId}&carousel=1&attempt=${retryAttempt}`}
-    />
   );
 }
 
@@ -157,35 +82,15 @@ export default function HeroBanner({
   autoPlayInterval = 8000,
   showControls = true,
   showIndicators = true,
-  enableVideo = false,
 }: HeroBannerProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isHovered, setIsHovered] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
-  const [isMuted, setIsMuted] = useState(true);
-  const [videoReady, setVideoReady] = useState(false);
   const transitionTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (currentIndex >= items.length) setCurrentIndex(0);
   }, [currentIndex, items.length]);
-
-  useEffect(() => {
-    setVideoReady(false);
-    if (!enableVideo || !items[currentIndex]?.douban_id) return;
-
-    const connection = (
-      navigator as Navigator & { connection?: NetworkInformation }
-    ).connection;
-    const isConstrainedNetwork =
-      connection?.saveData === true ||
-      connection?.effectiveType === 'slow-2g' ||
-      connection?.effectiveType === '2g';
-    const delay = isConstrainedNetwork ? 8000 : 2500;
-    const timerId = window.setTimeout(() => setVideoReady(true), delay);
-
-    return () => window.clearTimeout(timerId);
-  }, [currentIndex, enableVideo, items]);
 
   useEffect(
     () => () => {
@@ -243,15 +148,6 @@ export default function HeroBanner({
   if (items.length === 0) return null;
 
   const currentItem = items[currentIndex];
-  const mediaIndices = Array.from(
-    new Set([
-      (currentIndex - 1 + items.length) % items.length,
-      currentIndex,
-      (currentIndex + 1) % items.length,
-    ]),
-  );
-  const hasVideo = enableVideo && !!currentItem.douban_id;
-
   return (
     <div
       className='group relative h-[50vh] w-full overflow-hidden sm:h-[55vh] md:h-[60vh]'
@@ -260,29 +156,12 @@ export default function HeroBanner({
       {...swipeHandlers}
     >
       <div className='pointer-events-none absolute inset-0'>
-        {mediaIndices.map((index) => {
-          const item = items[index];
-          const isCurrent = index === currentIndex;
-
-          return (
-            <div
-              key={item.id}
-              className={`absolute inset-0 transition-opacity duration-1000 ease-in-out ${
-                isCurrent ? 'opacity-100' : 'opacity-0'
-              }`}
-            >
-              <BannerImage
-                src={getImageUrl(item)}
-                alt={item.title}
-                isPriority={isCurrent}
-              />
-
-              {isCurrent && videoReady && item.douban_id && (
-                <BannerVideo doubanId={item.douban_id} isMuted={isMuted} />
-              )}
-            </div>
-          );
-        })}
+        <BannerImage
+          key={currentItem.id}
+          src={getImageUrl(currentItem)}
+          alt={currentItem.title}
+          isPriority={currentIndex === 0}
+        />
 
         <div className='absolute inset-0 bg-gradient-to-t from-black via-black/40 to-black/80' />
         <div className='absolute inset-0 bg-gradient-to-r from-black/60 via-transparent to-transparent' />
@@ -336,6 +215,7 @@ export default function HeroBanner({
                   ? `/play?title=${encodeURIComponent(currentItem.title)}`
                   : `/play?title=${encodeURIComponent(currentItem.title)}${currentItem.year ? `&year=${currentItem.year}` : ''}${currentItem.douban_id ? `&douban_id=${currentItem.douban_id}` : ''}${currentItem.type ? `&stype=${currentItem.type}` : ''}`
               }
+              prefetch={false}
               className='flex transform items-center gap-2 rounded bg-white px-6 py-2.5 text-base font-bold text-black shadow-xl transition-all hover:scale-105 hover:bg-white/90 active:scale-95 sm:px-8 sm:py-3 sm:text-lg md:px-10 md:py-4 md:text-xl'
             >
               <Play
@@ -354,6 +234,7 @@ export default function HeroBanner({
                         : currentItem.type || 'movie'
                     }`
               }
+              prefetch={false}
               className='flex transform items-center gap-2 rounded border border-white/50 bg-white/30 px-6 py-2.5 text-base font-bold text-white shadow-xl backdrop-blur-md transition-all hover:scale-105 hover:bg-white/40 active:scale-95 sm:px-8 sm:py-3 sm:text-lg md:px-10 md:py-4 md:text-xl'
             >
               <Info className='h-5 w-5 sm:h-6 sm:w-6 md:h-7 md:w-7' />
@@ -362,20 +243,6 @@ export default function HeroBanner({
           </div>
         </div>
       </div>
-
-      {hasVideo && (
-        <button
-          onClick={() => setIsMuted((muted) => !muted)}
-          className='absolute right-4 bottom-6 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white/50 bg-black/50 text-white backdrop-blur-sm transition-all hover:bg-black/70 sm:right-8 sm:bottom-8 sm:h-12 sm:w-12 md:right-12 lg:right-16'
-          aria-label={isMuted ? '取消静音' : '静音'}
-        >
-          {isMuted ? (
-            <VolumeX className='h-5 w-5 sm:h-6 sm:w-6' />
-          ) : (
-            <Volume2 className='h-5 w-5 sm:h-6 sm:w-6' />
-          )}
-        </button>
-      )}
 
       {showControls && items.length > 1 && (
         <>

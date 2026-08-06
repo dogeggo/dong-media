@@ -275,6 +275,6 @@ function shouldSkipAuth(pathname: string): boolean {
 // 配置middleware匹配规则
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|register|oidc-register|warning|api/login|api/register|api/logout|api/cron|api/server-config|api/tvbox(?:$|/search$)|api/live/merged|api/parse|api/bing-wallpaper|api/proxy/|api/auth/oidc/).*)',
+    '/((?!_next/static|_next/image|favicon.ico|register|oidc-register|warning|api/login|api/register|api/logout|api/cron|api/server-config|api/tvbox(?:$|/search$)|api/live/merged|api/parse|api/bing-wallpaper|api/image-proxy|api/web-vitals|api/proxy/|api/auth/oidc/).*)',
   ],
 };

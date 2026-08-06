@@ -160,6 +160,7 @@ export default function ModernNav() {
                     <FastLink
                       key={item.label}
                       href={item.href}
+                      prefetchOnIntent
                       useTransitionNav
                       className={`group relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-200 whitespace-nowrap shrink-0 ${
                         active
@@ -230,6 +231,7 @@ export default function ModernNav() {
                   <FastLink
                     key={item.label}
                     href={item.href}
+                    prefetchOnIntent
                     useTransitionNav
                     onClick={() => {
                       setShowMoreMenu(false);
@@ -284,6 +286,7 @@ export default function ModernNav() {
               <FastLink
                 key={item.label}
                 href={item.href}
+                prefetchOnIntent
                 useTransitionNav
                 className='flex flex-col items-center justify-center min-w-15 flex-1 py-2 px-1 transition-all duration-200 active:scale-95'
               >

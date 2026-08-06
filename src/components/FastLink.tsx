@@ -16,6 +16,15 @@ interface FastLinkProps {
    */
   forceRefresh?: boolean;
   /**
+   * Enable Next.js viewport prefetching. Disabled by default so visible
+   * navigation links do not compete with the current page's critical assets.
+   */
+  prefetch?: boolean;
+  /**
+   * Prefetch once after the user expresses navigation intent.
+   */
+  prefetchOnIntent?: boolean;
+  /**
    * Use React 18's startTransition to mark navigation as non-blocking.
    * Keeps the UI responsive during navigation.
    */
@@ -38,6 +47,8 @@ interface FastLinkProps {
   rel?: string;
 }
 
+const intentPrefetchedHrefs = new Set<string>();
+
 /**
  * FastLink - High-performance navigation component
  *
@@ -51,6 +62,8 @@ export function FastLink({
   children,
   className,
   forceRefresh = false,
+  prefetch = false,
+  prefetchOnIntent = false,
   useTransitionNav = false,
   onClick,
   'aria-label': ariaLabel,
@@ -60,6 +73,21 @@ export function FastLink({
   const router = useRouter();
 
   const { startNavigation } = useNavigationLoading();
+
+  const prefetchForIntent = () => {
+    if (
+      !prefetchOnIntent ||
+      forceRefresh ||
+      href.startsWith('http://') ||
+      href.startsWith('https://') ||
+      intentPrefetchedHrefs.has(href)
+    ) {
+      return;
+    }
+
+    intentPrefetchedHrefs.add(href);
+    router.prefetch(href);
+  };
 
   // Handle click events
   const handleClick = (e: MouseEvent<HTMLAnchorElement>) => {
@@ -106,8 +134,10 @@ export function FastLink({
     <Link
       href={href}
       onClick={handleClick}
+      onFocus={prefetchForIntent}
+      onMouseEnter={prefetchForIntent}
       className={className}
-      prefetch={true}
+      prefetch={prefetch}
       aria-label={ariaLabel}
       target={target}
       rel={target === '_blank' ? rel || 'noopener noreferrer' : rel}

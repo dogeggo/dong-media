@@ -1,6 +1,7 @@
 'use client';
 
 import { Heart, Play, Star } from 'lucide-react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { memo, startTransition, useCallback, useEffect, useState } from 'react';
 
@@ -53,15 +54,20 @@ const ShortDramaPoster = memo(function ShortDramaPoster({
         }}
       />
 
-      <img
+      <Image
         src={src}
         alt={alt}
-        className={`pointer-events-none h-full w-full select-none object-cover transition-all duration-700 ease-out ${
+        fill
+        sizes='(max-width: 640px) 33vw, (max-width: 768px) 25vw, (max-width: 1024px) 20vw, 16vw'
+        className={`pointer-events-none select-none object-cover transition-all duration-700 ease-out ${
           imageLoaded
             ? 'scale-100 opacity-100 blur-0 group-hover:scale-105'
             : 'scale-105 opacity-0 blur-md'
         }`}
-        loading={priority ? 'eager' : 'lazy'}
+        preload={priority}
+        loading={priority ? undefined : 'lazy'}
+        fetchPriority={priority ? 'high' : undefined}
+        quality={75}
         decoding='async'
         draggable={false}
         onLoad={markImageLoaded}

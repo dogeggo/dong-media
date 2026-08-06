@@ -77,21 +77,6 @@ export async function fetchHomeDoubanCategory(
   return data.list;
 }
 
-export async function fetchHomeDoubanDetail(
-  id: string,
-  signal: AbortSignal,
-): Promise<DoubanMovieDetail | null> {
-  const { data } = await requestJson<DoubanResult>(
-    `/api/douban/details?id=${encodeURIComponent(id)}`,
-    signal,
-    12_000,
-  );
-  if (data.code !== 200 || !Array.isArray(data.list)) {
-    throw new HomeApiError('豆瓣详情响应格式错误', 502, 'INVALID_DATA');
-  }
-  return data.list[0] || null;
-}
-
 export async function fetchHomeShortDramas(signal: AbortSignal) {
   const { data } = await requestJson<ShortDramaItem[]>(
     '/api/shortdrama/recommend?size=15',
