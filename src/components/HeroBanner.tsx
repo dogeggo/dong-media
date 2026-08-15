@@ -18,6 +18,10 @@ import {
   useState,
 } from 'react';
 
+import {
+  findNextHeroBannerCandidate,
+  getHeroBannerCandidateKey,
+} from '@/lib/hero-banner-selection';
 import { processImageUrl } from '@/lib/image-url';
 
 import { useAutoplay } from './hooks/useAutoplay';
@@ -38,6 +42,7 @@ interface BannerItem {
 
 interface HeroBannerProps {
   items: BannerItem[];
+  candidates?: BannerItem[];
   autoPlayInterval?: number;
   showControls?: boolean;
   showIndicators?: boolean;
@@ -62,6 +67,7 @@ interface DoubanDetailResponse {
 }
 
 type LowPriorityRequestInit = RequestInit & { priority?: 'low' };
+type BannerItemDetails = Partial<BannerItem> | undefined;
 
 const HERO_VIDEO_DELAY_MS = 4_000;
 const CONSTRAINED_HERO_VIDEO_DELAY_MS = 8_000;
@@ -90,18 +96,25 @@ function BannerImage({
   alt,
   isBackdrop,
   isPriority,
+  onPortrait,
 }: {
   src: string;
   alt: string;
   isBackdrop: boolean;
   isPriority: boolean;
+  onPortrait?: (src: string) => void;
 }) {
   const [loaded, setLoaded] = useState(false);
   const [useContain, setUseContain] = useState(!isBackdrop);
 
   const handleLoad = (event: SyntheticEvent<HTMLImageElement>) => {
     const image = event.currentTarget;
-    setUseContain(image.naturalWidth / Math.max(image.naturalHeight, 1) < 1.25);
+    const aspectRatio = image.naturalWidth / Math.max(image.naturalHeight, 1);
+    if (aspectRatio < 1 && onPortrait) {
+      onPortrait(src);
+      return;
+    }
+    setUseContain(aspectRatio < 1.25);
     setLoaded(true);
   };
 
@@ -173,11 +186,13 @@ function BannerVideo({
 
 export default function HeroBanner({
   items,
+  candidates,
   autoPlayInterval = 8000,
   showControls = true,
   showIndicators = true,
   enableVideo = true,
 }: HeroBannerProps) {
+  const [bannerItems, setBannerItems] = useState(items);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isHovered, setIsHovered] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -187,14 +202,23 @@ export default function HeroBanner({
   >({});
   const [videoReadyId, setVideoReadyId] = useState<number | null>(null);
   const [videoPlayingId, setVideoPlayingId] = useState<number | null>(null);
-  const detailRequestsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const detailRequestsRef = useRef<Map<string, Promise<BannerItemDetails>>>(
+    new Map(),
+  );
+  const detailResultsRef = useRef<Map<string, Partial<BannerItem>>>(new Map());
   const loadedDetailIdsRef = useRef<Set<string>>(new Set());
+  const rejectedItemKeysRef = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
   const transitionTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (currentIndex >= items.length) setCurrentIndex(0);
-  }, [currentIndex, items.length]);
+    setBannerItems(items);
+    rejectedItemKeysRef.current.clear();
+  }, [items]);
+
+  useEffect(() => {
+    if (currentIndex >= bannerItems.length) setCurrentIndex(0);
+  }, [bannerItems.length, currentIndex]);
 
   useEffect(
     () => () => {
@@ -209,8 +233,11 @@ export default function HeroBanner({
   const loadItemDetails = useCallback(
     (item: BannerItem, lowPriority: boolean, signal?: AbortSignal) => {
       const id = String(item.douban_id || item.id);
-      if (!item.douban_id || loadedDetailIdsRef.current.has(id)) {
-        return Promise.resolve();
+      if (!item.douban_id) {
+        return Promise.resolve(undefined);
+      }
+      if (loadedDetailIdsRef.current.has(id)) {
+        return Promise.resolve(detailResultsRef.current.get(id));
       }
 
       const existingRequest = detailRequestsRef.current.get(id);
@@ -229,20 +256,23 @@ export default function HeroBanner({
           const detail = result.list?.[0];
           if (!detail) return;
 
+          const itemDetails: Partial<BannerItem> = {
+            title: detail.title || item.title,
+            description: detail.plot_summary || item.description,
+            poster: detail.poster || item.poster,
+            backdrop: detail.backdrop || item.backdrop,
+            year: detail.year || item.year,
+            rate: detail.rate || item.rate,
+            trailerUrl: detail.trailerUrl || item.trailerUrl,
+          };
+          detailResultsRef.current.set(id, itemDetails);
           loadedDetailIdsRef.current.add(id);
-          if (!mountedRef.current) return;
+          if (!mountedRef.current) return itemDetails;
           setDetailsById((current) => ({
             ...current,
-            [id]: {
-              title: detail.title || item.title,
-              description: detail.plot_summary || item.description,
-              poster: detail.poster || item.poster,
-              backdrop: detail.backdrop || item.backdrop,
-              year: detail.year || item.year,
-              rate: detail.rate || item.rate,
-              trailerUrl: detail.trailerUrl || item.trailerUrl,
-            },
+            [id]: itemDetails,
           }));
+          return itemDetails;
         })
         // 详情加载失败时保留分类数据，不影响轮播和后续视频降级。
         .catch(() => undefined)
@@ -257,10 +287,10 @@ export default function HeroBanner({
   );
 
   useEffect(() => {
-    const item = items[currentIndex];
+    const item = bannerItems[currentIndex];
     if (!item || hasHeroDetails(item)) return;
     void loadItemDetails(item, false);
-  }, [currentIndex, items, loadItemDetails]);
+  }, [bannerItems, currentIndex, loadItemDetails]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -269,7 +299,7 @@ export default function HeroBanner({
     let scheduled = false;
 
     const loadRemainingDetails = async () => {
-      for (const item of items.slice(1)) {
+      for (const item of bannerItems.slice(1)) {
         if (controller.signal.aborted) return;
         if (!hasHeroDetails(item)) {
           await loadItemDetails(item, true, controller.signal);
@@ -309,9 +339,9 @@ export default function HeroBanner({
       if (delayTimer !== null) window.clearTimeout(delayTimer);
       if (idleCallback !== null) window.cancelIdleCallback(idleCallback);
     };
-  }, [items, loadItemDetails]);
+  }, [bannerItems, loadItemDetails]);
 
-  const currentBaseItem = items[currentIndex];
+  const currentBaseItem = bannerItems[currentIndex];
   const currentItem = currentBaseItem
     ? {
         ...currentBaseItem,
@@ -384,18 +414,20 @@ export default function HeroBanner({
   }, []);
 
   const handleNext = useCallback(() => {
-    if (isTransitioning || items.length === 0) return;
+    if (isTransitioning || bannerItems.length === 0) return;
     setIsTransitioning(true);
-    setCurrentIndex((index) => (index + 1) % items.length);
+    setCurrentIndex((index) => (index + 1) % bannerItems.length);
     finishTransitionLater();
-  }, [finishTransitionLater, isTransitioning, items.length]);
+  }, [bannerItems.length, finishTransitionLater, isTransitioning]);
 
   const handlePrev = useCallback(() => {
-    if (isTransitioning || items.length === 0) return;
+    if (isTransitioning || bannerItems.length === 0) return;
     setIsTransitioning(true);
-    setCurrentIndex((index) => (index - 1 + items.length) % items.length);
+    setCurrentIndex(
+      (index) => (index - 1 + bannerItems.length) % bannerItems.length,
+    );
     finishTransitionLater();
-  }, [finishTransitionLater, isTransitioning, items.length]);
+  }, [bannerItems.length, finishTransitionLater, isTransitioning]);
 
   const handleIndicatorClick = (index: number) => {
     if (isTransitioning || index === currentIndex) return;
@@ -408,7 +440,7 @@ export default function HeroBanner({
     currentIndex,
     isHovered,
     autoPlayInterval,
-    itemsLength: items.length,
+    itemsLength: bannerItems.length,
     onNext: handleNext,
   });
 
@@ -416,6 +448,48 @@ export default function HeroBanner({
     onSwipeLeft: handleNext,
     onSwipeRight: handlePrev,
   });
+
+  const handlePortraitImage = useCallback(
+    async (item: BannerItem, rejectedImageUrl: string) => {
+      if (!candidates) return;
+
+      // 分类数据通常只有海报；先等待详情中的横版背景图，避免过早跳过。
+      if (!hasHeroDetails(item)) {
+        const details = await loadItemDetails(item, false);
+        if (!mountedRef.current) return;
+        if (
+          details &&
+          getImageUrl({ ...item, ...details }) !== rejectedImageUrl
+        ) {
+          return;
+        }
+      }
+
+      const rejectedKey = getHeroBannerCandidateKey(item);
+      rejectedItemKeysRef.current.add(rejectedKey);
+      setBannerItems((currentItems) => {
+        const itemIndex = currentItems.findIndex(
+          (current) => getHeroBannerCandidateKey(current) === rejectedKey,
+        );
+        if (itemIndex < 0) return currentItems;
+
+        const replacement = findNextHeroBannerCandidate(
+          item,
+          currentItems,
+          candidates,
+          rejectedItemKeysRef.current,
+        );
+        if (!replacement) {
+          return currentItems.filter((_, index) => index !== itemIndex);
+        }
+
+        return currentItems.map((current, index) =>
+          index === itemIndex ? replacement : current,
+        );
+      });
+    },
+    [candidates, loadItemDetails],
+  );
 
   if (!currentItem) return null;
 
@@ -437,6 +511,11 @@ export default function HeroBanner({
           alt={currentItem.title}
           isBackdrop={Boolean(currentItem.backdrop)}
           isPriority={currentIndex === 0}
+          onPortrait={
+            candidates
+              ? (src) => void handlePortraitImage(currentItem, src)
+              : undefined
+          }
         />
 
         {shouldMountVideo && currentItem.douban_id && (
@@ -543,7 +622,7 @@ export default function HeroBanner({
         </button>
       )}
 
-      {showControls && items.length > 1 && (
+      {showControls && bannerItems.length > 1 && (
         <>
           <button
             onClick={handlePrev}
@@ -562,11 +641,11 @@ export default function HeroBanner({
         </>
       )}
 
-      {showIndicators && items.length > 1 && (
+      {showIndicators && bannerItems.length > 1 && (
         <div className='absolute bottom-4 left-1/2 flex -translate-x-1/2 gap-2 sm:bottom-6'>
-          {items.map((item, index) => (
+          {bannerItems.map((item, index) => (
             <button
-              key={item.id}
+              key={getHeroBannerCandidateKey(item)}
               onClick={() => handleIndicatorClick(index)}
               className={`h-1 rounded-full transition-all duration-300 ${
                 index === currentIndex
@@ -581,7 +660,7 @@ export default function HeroBanner({
 
       <div className='absolute top-4 right-4 sm:top-6 sm:right-8 md:top-8 md:right-12'>
         <div className='rounded border-2 border-white/70 bg-black/60 px-2 py-1 text-xs font-bold text-white backdrop-blur-sm sm:text-sm'>
-          {currentIndex + 1} / {items.length}
+          {currentIndex + 1} / {bannerItems.length}
         </div>
       </div>
     </div>

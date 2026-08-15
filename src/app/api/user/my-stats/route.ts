@@ -5,32 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthInfoFromCookie } from '@/lib/auth';
 import { loadConfig } from '@/lib/config';
 import { db } from '@/lib/db';
-
-// 计算注册天数
-export function calculateRegistrationDays(startDate: number): number {
-  if (!startDate || startDate <= 0) return 0;
-
-  const firstDate = new Date(startDate);
-  const currentDate = new Date();
-
-  // 获取自然日（忽略时分秒）
-  const firstDay = new Date(
-    firstDate.getFullYear(),
-    firstDate.getMonth(),
-    firstDate.getDate(),
-  );
-  const currentDay = new Date(
-    currentDate.getFullYear(),
-    currentDate.getMonth(),
-    currentDate.getDate(),
-  );
-
-  // 计算自然日差值并加1
-  const daysDiff = Math.floor(
-    (currentDay.getTime() - firstDay.getTime()) / (1000 * 60 * 60 * 24),
-  );
-  return daysDiff + 1;
-}
+import { calculateRegistrationDays } from '@/lib/play-stats';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

@@ -45,6 +45,10 @@ import { createPortal } from 'react-dom';
 import { AdminConfig, AdminConfigResult } from '@/lib/admin.types';
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 import {
+  MAX_INACTIVE_USER_CLEANUP_EXEMPT_WATCH_HOURS,
+  normalizeInactiveUserCleanupExemptWatchHours,
+} from '@/lib/inactive-user-cleanup';
+import {
   getAllowedSourceKeys,
   getEffectiveUserTags,
 } from '@/lib/source-permissions';
@@ -1057,7 +1061,7 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                     自动清理非活跃用户
                   </div>
                   <div className='text-sm text-gray-600 dark:text-gray-400'>
-                    自动删除指定天数内未登录的非活跃用户账号
+                    自动删除长期未登录的账号；累计播放时长超过保护阈值的用户不会被清理
                   </div>
                 </div>
                 <div className='flex items-center'>
@@ -1128,62 +1132,137 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                 </div>
               </div>
 
-              {/* 天数设置 */}
-              <div className='flex items-center space-x-3'>
-                <label className='text-sm font-medium text-gray-700 dark:text-gray-300'>
-                  保留天数：
-                </label>
-                <input
-                  type='number'
-                  min='1'
-                  max='365'
-                  defaultValue={config.UserConfig.InactiveUserDays || 7}
-                  onBlur={async (e) => {
-                    const days = parseInt(e.target.value) || 7;
-                    if (days === (config.UserConfig.InactiveUserDays || 7)) {
-                      return; // 没有变化，不需要保存
-                    }
-
-                    await withLoading('updateInactiveDays', async () => {
-                      try {
-                        const response = await fetch('/api/admin/config', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({
-                            ...config,
-                            UserConfig: {
-                              ...config.UserConfig,
-                              InactiveUserDays: days,
-                            },
-                          }),
-                        });
-
-                        if (response.ok) {
-                          await refreshConfig();
-                          showAlert({
-                            type: 'success',
-                            title: '设置已更新',
-                            message: `保留天数已设置为${days}天`,
-                            timer: 2000,
-                          });
-                        } else {
-                          throw new Error('更新失败');
-                        }
-                      } catch (err) {
-                        showAlert({
-                          type: 'error',
-                          title: '更新失败',
-                          message:
-                            err instanceof Error ? err.message : '未知错误',
-                        });
+              <div className='space-y-3'>
+                {/* 天数设置 */}
+                <div className='flex items-center space-x-3'>
+                  <label className='text-sm font-medium text-gray-700 dark:text-gray-300'>
+                    保留天数：
+                  </label>
+                  <input
+                    type='number'
+                    min='1'
+                    max='365'
+                    defaultValue={config.UserConfig.InactiveUserDays || 7}
+                    onBlur={async (e) => {
+                      const days = parseInt(e.target.value) || 7;
+                      if (days === (config.UserConfig.InactiveUserDays || 7)) {
+                        return; // 没有变化，不需要保存
                       }
-                    });
-                  }}
-                  className='w-20 px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-primary-500'
-                />
-                <span className='text-sm text-gray-600 dark:text-gray-400'>
-                  天（最后登入超过此天数的用户将被自动删除）
-                </span>
+
+                      await withLoading('updateInactiveDays', async () => {
+                        try {
+                          const response = await fetch('/api/admin/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              ...config,
+                              UserConfig: {
+                                ...config.UserConfig,
+                                InactiveUserDays: days,
+                              },
+                            }),
+                          });
+
+                          if (response.ok) {
+                            await refreshConfig();
+                            showAlert({
+                              type: 'success',
+                              title: '设置已更新',
+                              message: `保留天数已设置为${days}天`,
+                              timer: 2000,
+                            });
+                          } else {
+                            throw new Error('更新失败');
+                          }
+                        } catch (err) {
+                          showAlert({
+                            type: 'error',
+                            title: '更新失败',
+                            message:
+                              err instanceof Error ? err.message : '未知错误',
+                          });
+                        }
+                      });
+                    }}
+                    className='w-20 px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-primary-500'
+                  />
+                  <span className='text-sm text-gray-600 dark:text-gray-400'>
+                    天（最后登入超过此天数的用户将进入清理判断）
+                  </span>
+                </div>
+
+                {/* 累计播放时长保护设置 */}
+                <div className='flex items-center space-x-3'>
+                  <label className='text-sm font-medium text-gray-700 dark:text-gray-300'>
+                    播放保护：
+                  </label>
+                  <input
+                    type='number'
+                    min='0'
+                    max={MAX_INACTIVE_USER_CLEANUP_EXEMPT_WATCH_HOURS}
+                    step='0.5'
+                    defaultValue={normalizeInactiveUserCleanupExemptWatchHours(
+                      config.UserConfig.InactiveUserCleanupExemptWatchHours,
+                    )}
+                    onBlur={async (e) => {
+                      const rawHours = e.target.value.trim();
+                      const hours =
+                        normalizeInactiveUserCleanupExemptWatchHours(
+                          rawHours === '' ? Number.NaN : Number(rawHours),
+                        );
+                      e.target.value = String(hours);
+                      const currentHours =
+                        normalizeInactiveUserCleanupExemptWatchHours(
+                          config.UserConfig.InactiveUserCleanupExemptWatchHours,
+                        );
+                      if (hours === currentHours) {
+                        return;
+                      }
+
+                      await withLoading(
+                        'updateCleanupExemptWatchHours',
+                        async () => {
+                          try {
+                            const response = await fetch('/api/admin/config', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                ...config,
+                                UserConfig: {
+                                  ...config.UserConfig,
+                                  InactiveUserCleanupExemptWatchHours: hours,
+                                },
+                              }),
+                            });
+
+                            if (response.ok) {
+                              await refreshConfig();
+                              showAlert({
+                                type: 'success',
+                                title: '设置已更新',
+                                message: `累计播放时长超过${hours}小时的用户将不会被自动清理`,
+                                timer: 2000,
+                              });
+                            } else {
+                              throw new Error('更新失败');
+                            }
+                          } catch (err) {
+                            showAlert({
+                              type: 'error',
+                              title: '更新失败',
+                              message:
+                                err instanceof Error ? err.message : '未知错误',
+                            });
+                          }
+                        },
+                      );
+                    }}
+                    className='w-20 px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-primary-500'
+                  />
+                  <span className='text-sm text-gray-600 dark:text-gray-400'>
+                    小时（累计播放严格超过此时长的用户不会被清理）
+                  </span>
+                </div>
               </div>
             </div>
 

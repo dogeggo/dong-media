@@ -35,6 +35,7 @@ export interface AdminConfig {
     AllowRegister?: boolean; // 是否允许用户注册，默认 true
     AutoCleanupInactiveUsers?: boolean; // 是否自动清理非活跃用户，默认 false
     InactiveUserDays?: number; // 非活跃用户保留天数，默认 7
+    InactiveUserCleanupExemptWatchHours?: number; // 累计播放时长保护阈值（小时），默认 10
     Users: {
       username: string;
       role: 'user' | 'admin' | 'owner';

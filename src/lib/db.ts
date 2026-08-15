@@ -7,6 +7,7 @@ import {
   IStorage,
   PlayRecord,
   UserStat,
+  UserStatsSnapshot,
 } from './types';
 
 // storage type 常量: 'localstorage' | 'redis' 默认 'localstorage'
@@ -294,6 +295,10 @@ export class DbManager {
 
   async getUserStat(userName: string): Promise<UserStat> {
     return this.storage.getUserStat(userName);
+  }
+
+  async getUserStatsSnapshot(userName: string): Promise<UserStatsSnapshot> {
+    return this.storage.getUserStatsSnapshot(userName);
   }
 
   async updateUserStats(

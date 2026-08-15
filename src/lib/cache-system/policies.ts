@@ -34,6 +34,15 @@ export const CACHE_POLICIES = {
     maxEntryBytes: 512 * KiB,
     tags: ['config'],
   }),
+  PLAY_STATS: policy({
+    namespace: 'play-stats',
+    scope: 'system',
+    freshTtlSeconds: 30,
+    staleTtlSeconds: 2 * 60,
+    layers: ['memory', 'shared'],
+    maxEntryBytes: 16 * MiB,
+    tags: ['play-stats'],
+  }),
   DOUBAN_DETAILS: policy({
     namespace: 'douban.details',
     scope: 'public',

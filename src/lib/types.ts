@@ -197,6 +197,7 @@ export interface IStorage {
 
   // 播放统计相关
   getUserStat(userName: string): Promise<UserStat>;
+  getUserStatsSnapshot(userName: string): Promise<UserStatsSnapshot>;
   // 登入统计相关
   updateUserStats(username: string, playRecord?: PlayRecord): Promise<UserStat>;
 }
@@ -383,6 +384,13 @@ export interface UserStat {
   // 新增LunaTV-alpha的高级统计字段
   totalMovies?: number; // 观看影片总数（去重）
   firstWatchDate?: number; // 首次观看时间戳
+}
+
+// 用户统计及其原始播放记录的一致性快照。管理员聚合统计需要同时使用
+// 两份数据，合并读取可以避免对同一用户重复获取全部播放记录。
+export interface UserStatsSnapshot {
+  userStat: UserStat;
+  playRecords: Record<string, PlayRecord>;
 }
 
 // 全站播放统计数据结构

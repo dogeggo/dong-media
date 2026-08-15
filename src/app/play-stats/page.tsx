@@ -7,7 +7,12 @@ import React, { useCallback, useEffect, useState } from 'react';
 
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 import { subscribeToDataUpdates } from '@/lib/db.client';
-import { PlayRecord, ReleaseCalendarItem, UserStat } from '@/lib/types';
+import {
+  PlayRecord,
+  PlayStatsResult,
+  ReleaseCalendarItem,
+  UserStat,
+} from '@/lib/types';
 import { processImageUrl } from '@/lib/utils';
 import {
   checkWatchingUpdates,
@@ -133,8 +138,6 @@ function formatLoginDisplay(loginCount: number) {
   };
 }
 
-import { PlayStatsResult } from '@/app/api/admin/play-stats/route';
-
 const PlayStatsPage: React.FC = () => {
   const router = useRouter();
   const DEFAULT_USER_STATS_PAGE_SIZE = 10;
@@ -226,36 +229,40 @@ const PlayStatsPage: React.FC = () => {
   };
 
   // 获取管理员统计数据
-  const fetchAdminStats = useCallback(async () => {
-    try {
-      console.log('开始获取管理员统计数据...');
-      const response = await fetch('/api/admin/play-stats');
+  const fetchAdminStats = useCallback(
+    async (forceRefresh = false) => {
+      try {
+        const response = await fetch(
+          `/api/admin/play-stats${forceRefresh ? '?refresh=1' : ''}`,
+        );
 
-      if (response.status === 401) {
-        router.push('/login');
-        return;
+        if (response.status === 401) {
+          router.push('/login');
+          return null;
+        }
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || `HTTP ${response.status}`);
+        }
+
+        const data = (await response.json()) as PlayStatsResult;
+        setStatsData(data);
+        return data;
+      } catch (err) {
+        console.error('获取管理员统计数据失败:', err);
+        const errorMessage =
+          err instanceof Error ? err.message : '获取播放统计失败';
+        setError(errorMessage);
+        return null;
       }
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
-      console.log('管理员统计数据获取成功:', data);
-      setStatsData(data);
-    } catch (err) {
-      console.error('获取管理员统计数据失败:', err);
-      const errorMessage =
-        err instanceof Error ? err.message : '获取播放统计失败';
-      setError(errorMessage);
-    }
-  }, [router]);
+    },
+    [router],
+  );
 
   // 获取用户个人统计数据
   const fetchUserStats = useCallback(async () => {
     try {
-      console.log('开始获取用户个人统计数据...');
       const response = await fetch('/api/user/my-stats');
 
       if (response.status === 401) {
@@ -268,10 +275,7 @@ const PlayStatsPage: React.FC = () => {
         throw new Error(errorData.error || `HTTP ${response.status}`);
       }
 
-      const data = await response.json();
-      console.log('用户个人统计数据获取成功:', data);
-      console.log('个人统计中的注册天数:', data.registrationDays);
-      console.log('个人统计中的登录次数:', data.loginCount);
+      const data = (await response.json()) as UserStat;
       setUserStats(data);
     } catch (err) {
       console.error('获取用户个人统计数据失败:', err);
@@ -282,24 +286,29 @@ const PlayStatsPage: React.FC = () => {
   }, [router]);
 
   // 根据用户角色获取数据
-  const fetchStats = useCallback(async () => {
-    console.log('fetchStats 被调用, isAdmin:', isAdmin);
-    setLoading(true);
-    setError(null);
+  const fetchStats = useCallback(
+    async (forceRefresh = false) => {
+      setLoading(true);
+      setError(null);
 
-    if (isAdmin) {
-      console.log('管理员模式，同时获取全站统计和个人统计');
-      // 管理员同时获取全站统计和个人统计
-      await Promise.all([fetchAdminStats(), fetchUserStats()]);
-    } else {
-      console.log('普通用户模式，只获取个人统计');
-      // 普通用户只获取个人统计
-      await fetchUserStats();
-    }
+      if (isAdmin) {
+        const adminStats = await fetchAdminStats(forceRefresh);
+        const currentUserStats = adminStats?.userStats.find(
+          (stat) => stat.username === authInfo?.username,
+        );
+        if (currentUserStats) {
+          setUserStats(currentUserStats);
+        } else {
+          await fetchUserStats();
+        }
+      } else {
+        await fetchUserStats();
+      }
 
-    setLoading(false);
-    console.log('fetchStats 完成');
-  }, [isAdmin, fetchAdminStats, fetchUserStats]);
+      setLoading(false);
+    },
+    [authInfo?.username, isAdmin, fetchAdminStats, fetchUserStats],
+  );
 
   // 获取即将上映的内容，业务缓存统一由发布日历 API 管理。
   const fetchUpcomingReleases = useCallback(async () => {
@@ -350,7 +359,7 @@ const PlayStatsPage: React.FC = () => {
       console.log('已重新检查追番更新');
 
       // 重新获取统计数据
-      await fetchStats();
+      await fetchStats(true);
       console.log('已重新获取统计数据');
 
       // 重新获取 watchingUpdates

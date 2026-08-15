@@ -6,9 +6,13 @@ import { noStoreResponseHeaders } from '@/lib/cache-system';
 import { getAvailableApiSites, loadConfig, refineConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { getDetailFromApi, searchFromApi } from '@/lib/downstream';
+import {
+  isInactiveUserExemptFromCleanup,
+  normalizeInactiveUserCleanupExemptWatchHours,
+} from '@/lib/inactive-user-cleanup';
 import { refreshLiveChannels } from '@/lib/live';
 import { warmReleaseCalendarCache } from '@/lib/release-calendar-cache';
-import { SearchResult } from '@/lib/types';
+import { SearchResult, UserStat } from '@/lib/types';
 import { generateSearchVariants } from '@/lib/utils';
 
 export const runtime = 'nodejs';
@@ -359,16 +363,20 @@ async function cleanupInactiveUsers() {
   try {
     const config = await loadConfig();
 
-    // 清理策略：基于登入时间而不是播放记录
-    // 删除条件：注册时间 >= X天 且 (从未登入 或 最后登入时间 >= X天)
+    // 清理策略：先根据登入/注册时间识别非活跃用户，再根据累计播放时长豁免。
+    // 删除条件：最后活动时间早于阈值，且累计播放时长未超过保护阈值。
 
     // 检查是否启用自动清理功能
     const autoCleanupEnabled =
       config.UserConfig?.AutoCleanupInactiveUsers ?? false;
     const inactiveUserDays = config.UserConfig?.InactiveUserDays ?? 7;
+    const cleanupExemptWatchHours =
+      normalizeInactiveUserCleanupExemptWatchHours(
+        config.UserConfig?.InactiveUserCleanupExemptWatchHours,
+      );
 
     console.log(
-      `📋 清理配置: 启用=${autoCleanupEnabled}, 保留天数=${inactiveUserDays}`,
+      `📋 清理配置: 启用=${autoCleanupEnabled}, 保留天数=${inactiveUserDays}, 播放时长保护阈值=${cleanupExemptWatchHours}小时`,
     );
 
     if (!autoCleanupEnabled) {
@@ -398,16 +406,12 @@ async function cleanupInactiveUsers() {
         // 获取用户统计信息（5秒超时）
         let userStats;
         try {
-          userStats = (await Promise.race([
+          userStats = await Promise.race<UserStat>([
             db.getUserStat(user.username),
-            new Promise((_, reject) =>
+            new Promise<UserStat>((_, reject) =>
               setTimeout(() => reject(new Error('getUserPlayStat超时')), 5000),
             ),
-          ])) as {
-            lastLoginTime?: number;
-            loginCount?: number;
-            [key: string]: any;
-          };
+          ]);
         } catch (err) {
           console.error(`  ❌ 获取用户统计失败: ${err}, 跳过该用户`);
           continue;
@@ -424,8 +428,21 @@ async function cleanupInactiveUsers() {
         const shouldDelete = lastActiveTime > 0 && lastActiveTime < cutoffTime;
 
         if (shouldDelete) {
+          const totalWatchTime = userStats.totalWatchTime || 0;
+          if (
+            isInactiveUserExemptFromCleanup(
+              totalWatchTime,
+              cleanupExemptWatchHours,
+            )
+          ) {
+            console.log(
+              `🛡️ 保留非活跃用户: ${user.username} (累计播放时长: ${(totalWatchTime / 60 / 60).toFixed(2)}小时，大于保护阈值: ${cleanupExemptWatchHours}小时)`,
+            );
+            continue;
+          }
+
           console.log(
-            `🗑️ 删除非活跃用户: ${user.username} (${activityType}: ${new Date(lastActiveTime).toISOString()}, 登入次数: ${userStats.loginCount || 0}, 阈值: ${inactiveUserDays}天)`,
+            `🗑️ 删除非活跃用户: ${user.username} (${activityType}: ${new Date(lastActiveTime).toISOString()}, 登入次数: ${userStats.loginCount || 0}, 累计播放时长: ${(totalWatchTime / 60 / 60).toFixed(2)}小时, 阈值: ${inactiveUserDays}天)`,
           );
 
           // 从数据库删除用户数据

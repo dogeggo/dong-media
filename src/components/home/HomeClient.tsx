@@ -102,59 +102,38 @@ export default function HomeClient({ recommendations }: HomeClientProps) {
     return date;
   }, []); // 空依赖，只在组件挂载时计算一次
 
-  const heroItems = useMemo(
-    () => [
-      ...hotMovies.slice(0, 2).map((movie) => ({
-        id: movie.id,
-        title: movie.title,
-        poster: movie.poster,
-        backdrop: movie.backdrop,
-        trailerUrl: movie.trailerUrl,
-        description: movie.plot_summary,
-        year: movie.year,
-        rate: movie.rate,
-        douban_id: Number(movie.id),
-        type: 'movie',
-      })),
-      ...hotTvShows.slice(0, 2).map((show) => ({
-        id: show.id,
-        title: show.title,
-        poster: show.poster,
-        backdrop: show.backdrop,
-        trailerUrl: show.trailerUrl,
-        description: show.plot_summary,
-        year: show.year,
-        rate: show.rate,
-        douban_id: Number(show.id),
-        type: 'tv',
-      })),
-      ...hotVarietyShows.slice(0, 1).map((show) => ({
-        id: show.id,
-        title: show.title,
-        poster: show.poster,
-        backdrop: show.backdrop,
-        trailerUrl: show.trailerUrl,
-        description: show.plot_summary,
-        year: show.year,
-        rate: show.rate,
-        douban_id: Number(show.id),
-        type: 'variety',
-      })),
-      ...hotAnime.slice(0, 1).map((anime) => ({
-        id: anime.id,
-        title: anime.title,
-        poster: anime.poster,
-        backdrop: anime.backdrop,
-        trailerUrl: anime.trailerUrl,
-        description: anime.plot_summary,
-        year: anime.year,
-        rate: anime.rate,
-        douban_id: Number(anime.id),
-        type: 'anime',
-      })),
-    ],
-    [hotAnime, hotMovies, hotTvShows, hotVarietyShows],
-  );
+  const { heroCandidates, heroItems } = useMemo(() => {
+    const mapCategory = (
+      categoryItems: typeof hotMovies,
+      type: 'anime' | 'movie' | 'tv' | 'variety',
+    ) =>
+      categoryItems.map((item) => ({
+        id: item.id,
+        title: item.title,
+        poster: item.poster,
+        backdrop: item.backdrop,
+        trailerUrl: item.trailerUrl,
+        description: item.plot_summary,
+        year: item.year,
+        rate: item.rate,
+        douban_id: Number(item.id),
+        type,
+      }));
+
+    const categories = [
+      { items: mapCategory(hotMovies, 'movie'), limit: 2 },
+      { items: mapCategory(hotTvShows, 'tv'), limit: 2 },
+      { items: mapCategory(hotVarietyShows, 'variety'), limit: 1 },
+      { items: mapCategory(hotAnime, 'anime'), limit: 1 },
+    ];
+
+    return {
+      heroCandidates: categories.flatMap((category) => category.items),
+      heroItems: categories.flatMap((category) =>
+        category.items.slice(0, category.limit),
+      ),
+    };
+  }, [hotAnime, hotMovies, hotTvShows, hotVarietyShows]);
 
   // 合并初始化逻辑 - 优化性能，减少重渲染
   useEffect(() => {
@@ -636,6 +615,7 @@ export default function HomeClient({ recommendations }: HomeClientProps) {
                   {heroItems.length > 0 ? (
                     <MemoizedHeroBanner
                       items={heroItems}
+                      candidates={heroCandidates}
                       autoPlayInterval={8000}
                       showControls={true}
                       showIndicators={true}

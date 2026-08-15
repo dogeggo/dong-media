@@ -12,6 +12,7 @@ import {
   IStorage,
   PlayRecord,
   UserStat,
+  UserStatsSnapshot,
 } from './types';
 
 // 搜索历史最大条数
@@ -771,50 +772,47 @@ export abstract class BaseRedisStorage implements IStorage {
     }
   }
 
-  // 获取用户播放统计
-  async getUserStat(userName: string): Promise<UserStat> {
-    try {
-      // 获取用户所有播放记录
-      const playRecords = await this.getAllPlayRecords(userName);
-      const records = Object.values(playRecords);
-      const loginStatsKey = `user_login_stats:${userName}`;
-      const storedLoginStats = await this.client.get(loginStatsKey);
-      let userStat: UserStat = storedLoginStats
-        ? parseStoredJson<UserStat>(storedLoginStats)
-        : { username: userName };
+  // 一次并行读取统计依赖，避免管理员页面先通过 getUserStat 扫描播放记录，
+  // 随后又通过 getAllPlayRecords 重复扫描同一个 Hash。
+  async getUserStatsSnapshot(userName: string): Promise<UserStatsSnapshot> {
+    const loginStatsKey = `user_login_stats:${userName}`;
+    const userMovieHis = `user_movie_his:${userName}`;
+    const [playRecords, storedLoginStats, totalMovies] = await Promise.all([
+      this.getAllPlayRecords(userName),
+      this.withRetry(() => this.client.get(loginStatsKey)),
+      this.withRetry(() => this.client.sCard(userMovieHis)),
+    ]);
+    const records = Object.values(playRecords);
+    const userStat: UserStat = storedLoginStats
+      ? parseStoredJson<UserStat>(storedLoginStats)
+      : { username: userName };
+    const totalWatchTime = userStat.totalWatchTime || 0;
+    const totalPlays = userStat.totalPlays || 0;
 
-      // 计算统计数据
-      const totalWatchTime = userStat.totalWatchTime || 0;
-      const totalPlays = userStat.totalPlays || 0;
+    userStat.totalMovies = totalMovies;
+    userStat.avgWatchTime = totalPlays > 0 ? totalWatchTime / totalPlays : 0;
+    if (records.length > 0) {
+      userStat.recentRecords = records
+        .sort((a, b) => (b.save_time || 0) - (a.save_time || 0))
+        .slice(0, 10);
+      const sourceMap = new Map<string, number>();
+      records.forEach((record) => {
+        const sourceName = record.source_name || '未知来源';
+        sourceMap.set(sourceName, (sourceMap.get(sourceName) || 0) + 1);
+      });
+      userStat.mostWatchedSource = Array.from(sourceMap.entries()).reduce(
+        (mostWatched, current) =>
+          mostWatched[1] > current[1] ? mostWatched : current,
+      )[0];
+    }
 
-      const userMovieHis = `user_movie_his:${userName}`;
-      userStat.totalMovies = await this.client.sCard(userMovieHis);
-
-      // 平均观看时长
-      userStat.avgWatchTime = totalPlays > 0 ? totalWatchTime / totalPlays : 0;
-      if (records.length > 0) {
-        // 最近10条记录，按时间排序
-        userStat.recentRecords = records
-          .sort((a, b) => (b.save_time || 0) - (a.save_time || 0))
-          .slice(0, 10);
-        // 最常观看的来源
-        const sourceMap = new Map<string, number>();
-        records.forEach((record) => {
-          const sourceName = record.source_name || '未知来源';
-          const count = sourceMap.get(sourceName) || 0;
-          sourceMap.set(sourceName, count + 1);
-        });
-        userStat.mostWatchedSource =
-          sourceMap.size > 0
-            ? Array.from(sourceMap.entries()).reduce((a, b) =>
-                a[1] > b[1] ? a : b,
-              )[0]
-            : '';
-      }
-      const enhancedStats = {
+    return {
+      playRecords,
+      userStat: {
         ...userStat,
-        totalWatchTime: totalWatchTime,
-        totalPlays: totalPlays,
+        username: userStat.username || userName,
+        totalWatchTime,
+        totalPlays,
         lastPlayTime: userStat.lastPlayTime ?? userStat.lastLoginTime ?? 0,
         mostWatchedSource: userStat.mostWatchedSource ?? '',
         recentRecords: userStat.recentRecords ?? [],
@@ -823,8 +821,14 @@ export abstract class BaseRedisStorage implements IStorage {
           userStat.firstWatchDate ?? userStat.lastPlayTime ?? Date.now(),
         loginCount: userStat.loginCount ?? 0,
         lastLoginTime: userStat.lastLoginTime ?? 0,
-      };
-      return enhancedStats;
+      },
+    };
+  }
+
+  // 获取用户播放统计
+  async getUserStat(userName: string): Promise<UserStat> {
+    try {
+      return (await this.getUserStatsSnapshot(userName)).userStat;
     } catch (error) {
       console.error(`获取用户 ${userName} 统计失败:`, error);
       return {
@@ -835,10 +839,8 @@ export abstract class BaseRedisStorage implements IStorage {
         recentRecords: [],
         avgWatchTime: 0,
         mostWatchedSource: '',
-        // 新增字段
         totalMovies: 0,
         firstWatchDate: Date.now(),
-        // 登入统计字段
         loginCount: 0,
         lastLoginTime: 0,
       };

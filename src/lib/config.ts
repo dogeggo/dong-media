@@ -6,6 +6,10 @@ import { db } from '@/lib/db';
 import { normalizeAdFilterConfig } from './ad-filter';
 import { AdminConfig } from './admin.types';
 import {
+  DEFAULT_INACTIVE_USER_CLEANUP_EXEMPT_WATCH_HOURS,
+  normalizeInactiveUserCleanupExemptWatchHours,
+} from './inactive-user-cleanup';
+import {
   getAdultContentPreference,
   getAllowedSourceKeys,
 } from './source-permissions';
@@ -231,6 +235,8 @@ async function getInitConfig(
     },
     UserConfig: {
       AllowRegister: true, // 默认允许注册
+      InactiveUserCleanupExemptWatchHours:
+        DEFAULT_INACTIVE_USER_CLEANUP_EXEMPT_WATCH_HOURS,
       Users: [],
     },
     SourceConfig: [],
@@ -487,6 +493,18 @@ export async function configSelfCheck(
   // 确保 AllowRegister 有默认值
   if (adminConfig.UserConfig.AllowRegister === undefined) {
     adminConfig.UserConfig.AllowRegister = true;
+  }
+  const normalizedCleanupExemptWatchHours =
+    normalizeInactiveUserCleanupExemptWatchHours(
+      adminConfig.UserConfig.InactiveUserCleanupExemptWatchHours,
+    );
+  if (
+    normalizedCleanupExemptWatchHours !==
+    adminConfig.UserConfig.InactiveUserCleanupExemptWatchHours
+  ) {
+    adminConfig.UserConfig.InactiveUserCleanupExemptWatchHours =
+      normalizedCleanupExemptWatchHours;
+    hasChanges = true;
   }
   if (!adminConfig.SourceConfig || !Array.isArray(adminConfig.SourceConfig)) {
     adminConfig.SourceConfig = [];
