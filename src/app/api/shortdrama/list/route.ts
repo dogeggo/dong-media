@@ -7,7 +7,10 @@ import {
   noStoreResponseHeaders,
   publicApiResponseHeaders,
 } from '@/lib/cache-system';
-import { getShortDramaList } from '@/lib/shortdrama-api';
+import {
+  getShortDramaList,
+  ShortDramaCategoryNotFoundError,
+} from '@/lib/shortdrama-api';
 
 // 强制动态路由，禁用所有缓存
 export const dynamic = 'force-dynamic';
@@ -17,13 +20,20 @@ export const fetchCache = 'force-no-store';
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = request.nextUrl;
-    if (!hasOnlyUniqueSearchParams(searchParams, ['categoryId', 'page'])) {
+    if (
+      !hasOnlyUniqueSearchParams(searchParams, [
+        'categoryId',
+        'categoryName',
+        'page',
+      ])
+    ) {
       return NextResponse.json(
         { error: '包含未知或重复参数' },
         { status: 400, headers: noStoreResponseHeaders() },
       );
     }
     const categoryId = searchParams.get('categoryId');
+    const categoryName = searchParams.get('categoryName')?.trim();
     const page = searchParams.get('page');
 
     if (!categoryId) {
@@ -38,20 +48,23 @@ export async function GET(request: NextRequest) {
 
     if (
       !Number.isSafeInteger(category) ||
-      category !== 1 ||
+      category < 1 ||
+      category > 1_000_000 ||
+      (categoryName !== undefined &&
+        (categoryName.length < 1 || categoryName.length > 50)) ||
       !Number.isSafeInteger(pageNum) ||
       pageNum < 1 ||
       pageNum > 1_000
     ) {
       return NextResponse.json(
-        { error: 'categoryId 必须为 1，分页参数必须为正整数' },
+        { error: '分类或分页参数格式错误' },
         { status: 400, headers: noStoreResponseHeaders() },
       );
     }
     const cached = await cacheService.getOrLoadResult(
       CACHE_POLICIES.SHORTDRAMA_LIST,
-      { category, page: pageNum },
-      () => getShortDramaList(category, pageNum),
+      { category, categoryName: categoryName || '', page: pageNum },
+      () => getShortDramaList(category, pageNum, categoryName),
       { isNegative: (value) => value.list.length === 0 },
     );
     return NextResponse.json(cached.value, {
@@ -61,6 +74,12 @@ export async function GET(request: NextRequest) {
       }),
     });
   } catch (error) {
+    if (error instanceof ShortDramaCategoryNotFoundError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: 400, headers: noStoreResponseHeaders() },
+      );
+    }
     console.error('获取短剧列表失败:', error);
     return NextResponse.json(
       { error: '服务器内部错误' },

@@ -26,19 +26,38 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { primaryApiUrl } = body;
+    const { sourceKeys } = body;
 
-    // 验证必填字段
-    if (!primaryApiUrl) {
-      return NextResponse.json({ error: '主API地址不能为空' }, { status: 400 });
+    if (
+      !Array.isArray(sourceKeys) ||
+      sourceKeys.length < 1 ||
+      sourceKeys.length > 100 ||
+      sourceKeys.some((sourceKey) => typeof sourceKey !== 'string') ||
+      new Set(sourceKeys).size !== sourceKeys.length
+    ) {
+      return NextResponse.json(
+        { error: '请至少选择一个有效影视源，且不能重复' },
+        { status: 400 },
+      );
     }
 
     // 获取当前配置
     const config = await loadConfig();
 
-    // 更新短剧配置
+    const availableSourceKeys = new Set(
+      config.SourceConfig.filter(
+        (source) => !source.disabled && !source.is_adult,
+      ).map((source) => source.key),
+    );
+    if (sourceKeys.some((sourceKey) => !availableSourceKeys.has(sourceKey))) {
+      return NextResponse.json(
+        { error: '选择中包含不存在、已禁用或成人影视源' },
+        { status: 400 },
+      );
+    }
+
     config.ShortDramaConfig = {
-      primaryApiUrl: primaryApiUrl.trim(),
+      sourceKeys,
     };
 
     // 保存到数据库
@@ -46,7 +65,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: '短剧API配置已更新',
+      message: '短剧源优先级已更新',
     });
   } catch (error) {
     console.error('保存短剧配置失败:', error);
@@ -78,7 +97,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       config: config.ShortDramaConfig || {
-        primaryApiUrl: 'https://wwzy.tv/api.php/provide/vod',
+        sourceKeys: [],
       },
     });
   } catch (error) {

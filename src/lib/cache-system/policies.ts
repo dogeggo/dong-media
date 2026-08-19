@@ -201,6 +201,7 @@ export const CACHE_POLICIES = {
   }),
   SHORTDRAMA_RECOMMENDS: policy({
     namespace: 'shortdrama.recommends',
+    version: 3,
     scope: 'public',
     freshTtlSeconds: 60 * 60,
     staleTtlSeconds: 30 * 60,
@@ -211,6 +212,7 @@ export const CACHE_POLICIES = {
   }),
   SHORTDRAMA_LIST: policy({
     namespace: 'shortdrama.list',
+    version: 3,
     scope: 'public',
     freshTtlSeconds: 2 * 60 * 60,
     staleTtlSeconds: 30 * 60,
@@ -221,6 +223,7 @@ export const CACHE_POLICIES = {
   }),
   SHORTDRAMA_CATEGORIES: policy({
     namespace: 'shortdrama.categories',
+    version: 3,
     scope: 'public',
     freshTtlSeconds: 4 * 60 * 60,
     staleTtlSeconds: 60 * 60,
@@ -231,6 +234,7 @@ export const CACHE_POLICIES = {
   }),
   SHORTDRAMA_SEARCH: policy({
     namespace: 'shortdrama.search',
+    version: 3,
     scope: 'public',
     freshTtlSeconds: 60 * 60,
     staleTtlSeconds: 30 * 60,

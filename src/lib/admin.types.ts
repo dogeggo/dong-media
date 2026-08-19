@@ -124,7 +124,7 @@ export interface AdminConfig {
     minTrustLevel: number; // 最低信任等级
   }[];
   ShortDramaConfig?: {
-    primaryApiUrl: string; // 主API地址
+    sourceKeys: string[]; // 按优先级排列的已有影视源 key
   };
   DownloadConfig?: {
     enabled: boolean; // 是否启用下载功能（全局开关）

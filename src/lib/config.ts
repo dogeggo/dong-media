@@ -9,6 +9,7 @@ import {
   DEFAULT_INACTIVE_USER_CLEANUP_EXEMPT_WATCH_HOURS,
   normalizeInactiveUserCleanupExemptWatchHours,
 } from './inactive-user-cleanup';
+import { normalizeShortDramaSourceKeys } from './shortdrama-source';
 import {
   getAdultContentPreference,
   getAllowedSourceKeys,
@@ -547,11 +548,33 @@ export async function configSelfCheck(
     };
   }
 
-  // 确保短剧配置有默认值
-  if (!adminConfig.ShortDramaConfig) {
+  // 将旧版分号 URL 配置迁移为按优先级排列的已有源 key，同时清理已删除、
+  // 禁用或成人源。没有选择时保持空数组，运行时不会自动扫描其他源。
+  const legacyShortDramaConfig = adminConfig.ShortDramaConfig as unknown as
+    | { sourceKeys?: unknown; primaryApiUrl?: unknown }
+    | undefined;
+  const shortDramaSources = adminConfig.SourceConfig.filter(
+    (source) => !source.disabled && !source.is_adult,
+  );
+  const normalizedShortDramaSourceKeys = normalizeShortDramaSourceKeys(
+    legacyShortDramaConfig?.sourceKeys,
+    legacyShortDramaConfig?.primaryApiUrl,
+    shortDramaSources,
+  );
+  if (
+    !legacyShortDramaConfig ||
+    !Array.isArray(legacyShortDramaConfig.sourceKeys) ||
+    legacyShortDramaConfig.sourceKeys.length !==
+      normalizedShortDramaSourceKeys.length ||
+    legacyShortDramaConfig.sourceKeys.some(
+      (sourceKey, index) => sourceKey !== normalizedShortDramaSourceKeys[index],
+    ) ||
+    'primaryApiUrl' in legacyShortDramaConfig
+  ) {
     adminConfig.ShortDramaConfig = {
-      primaryApiUrl: 'https://wwzy.tv/api.php/provide/vod', // 默认主API
+      sourceKeys: normalizedShortDramaSourceKeys,
     };
+    hasChanges = true;
   }
 
   // 确保下载配置有默认值

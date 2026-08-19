@@ -10,7 +10,7 @@ import {
   getShortDramaCategories,
   getShortDramaList,
   searchShortDramas,
-} from '@/lib/shortdrama-api';
+} from '@/lib/shortdrama-client';
 import { ShortDramaCategory, ShortDramaItem } from '@/lib/types';
 
 import PageLayout from '@/components/PageLayout';
@@ -30,6 +30,7 @@ export default function ShortDramaPage() {
   const [selectedCategory, setSelectedCategory] = useState<number>();
   const [dramas, setDramas] = useState<ShortDramaItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [page, setPage] = useState(1);
   const [searchInput, setSearchInput] = useState('');
@@ -62,10 +63,17 @@ export default function ShortDramaPage() {
   // 获取分类列表
   useEffect(() => {
     const fetchCategories = async () => {
-      const cats = await getShortDramaCategories();
-      setCategories(cats);
-      if (cats.length > 0 && !selectedCategory) {
-        setSelectedCategory(cats[0].type_id);
+      try {
+        const cats = await getShortDramaCategories();
+        setCategories(cats);
+        if (cats.length > 0 && !selectedCategory) {
+          setSelectedCategory(cats[0].type_id);
+        }
+      } catch (error) {
+        console.error('加载短剧分类失败:', error);
+        const fallbackCategories = [{ type_id: 1, type_name: '全部短剧' }];
+        setCategories(fallbackCategories);
+        setSelectedCategory(1);
       }
     };
     fetchCategories();
@@ -100,6 +108,7 @@ export default function ShortDramaPage() {
   const loadDramas = useCallback(
     async (pageNum: number, reset = false) => {
       setLoading(true);
+      setLoadError(null);
       try {
         let result: { list: ShortDramaItem[]; hasMore: boolean };
         if (isSearchMode) {
@@ -108,7 +117,14 @@ export default function ShortDramaPage() {
           }
           result = await searchShortDramas(searchQuery, pageNum);
         } else {
-          result = await getShortDramaList(selectedCategory, pageNum);
+          const categoryName = categories.find(
+            (category) => category.type_id === selectedCategory,
+          )?.type_name;
+          result = await getShortDramaList(
+            selectedCategory,
+            pageNum,
+            categoryName,
+          );
         }
 
         if (reset) {
@@ -120,11 +136,20 @@ export default function ShortDramaPage() {
         setHasMore(result.hasMore);
       } catch (error) {
         console.error('加载短剧失败:', error);
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : '短剧数据加载失败，请稍后重试',
+        );
+        if (reset) {
+          setDramas([]);
+          setIsInitialLoad(false);
+        }
       } finally {
         setLoading(false);
       }
     },
-    [selectedCategory, searchQuery, isSearchMode],
+    [categories, selectedCategory, searchQuery, isSearchMode],
   );
 
   // 当分类变化时重新加载
@@ -365,6 +390,26 @@ export default function ShortDramaPage() {
               ))}
           </div>
 
+          {!loading && loadError && (
+            <div className='flex justify-center py-12'>
+              <div className='w-full max-w-lg rounded-2xl border border-red-200 bg-red-50/80 p-6 text-center shadow-sm dark:border-red-900/60 dark:bg-red-950/30'>
+                <h3 className='text-lg font-semibold text-red-700 dark:text-red-300'>
+                  短剧数据加载失败
+                </h3>
+                <p className='mt-2 text-sm text-red-600 dark:text-red-400'>
+                  {loadError}
+                </p>
+                <button
+                  type='button'
+                  onClick={() => loadDramas(1, true)}
+                  className='mt-5 rounded-lg bg-red-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700'
+                >
+                  重新加载
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* 下拉加载更多提示 - 参考豆瓣页面样式 */}
           {isLoadingMore && hasMore && (
             <div className='flex justify-center mt-8 py-6'>
@@ -456,7 +501,7 @@ export default function ShortDramaPage() {
           )}
 
           {/* 无搜索结果 */}
-          {!loading && dramas.length === 0 && isSearchMode && (
+          {!loading && !loadError && dramas.length === 0 && isSearchMode && (
             <div className='flex justify-center py-16'>
               <div className='relative px-12 py-10 rounded-3xl bg-linear-to-br from-gray-50 via-slate-50 to-gray-100 dark:from-gray-800/40 dark:via-slate-800/40 dark:to-gray-800/50 border border-gray-200/50 dark:border-gray-700/50 shadow-xl backdrop-blur-sm overflow-hidden max-w-md'>
                 {/* 装饰性元素 */}
