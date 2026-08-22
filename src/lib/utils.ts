@@ -3,6 +3,14 @@ import he from 'he';
 import stcasc, { ChineseType } from 'switch-chinese';
 import { twMerge } from 'tailwind-merge';
 
+import {
+  calculateTransferSpeedBytesPerSecond,
+  formatTransferSpeed,
+  getHlsTransferSpeedSample,
+  isMeasurableMediaFragment,
+  TransferSpeedSample,
+} from './media-speed';
+
 export { processImageUrl } from './image-url';
 
 /**
@@ -265,37 +273,15 @@ export async function getVideoResolutionFromM3u8(m3u8Url: string): Promise<{
       let actualLoadSpeed = '未知';
       let hasSpeedCalculated = false;
       let hasMetadataLoaded = false;
-      let fragmentStartTime = 0;
-      const speedSamples: number[] = [];
-      const minSampleDurationMs = isMobile ? 120 : 80;
-      const maxSpeedMBps = 50;
+      const fragmentStartTimes = new WeakMap<object, number>();
+      const speedSamples: TransferSpeedSample[] = [];
       const requiredSamples = isMobile ? 1 : 2;
       const maxSampleAttempts = isMobile ? 2 : 3;
       let sampleAttempts = 0;
 
-      const formatSpeed = (speedKBps: number) =>
-        speedKBps >= 1024
-          ? `${(speedKBps / 1024).toFixed(2)} MB/s`
-          : `${speedKBps.toFixed(2)} KB/s`;
-
-      const getFragmentLoadMetrics = (data: any) => {
-        const stats = data?.frag?.stats || data?.stats;
-        const loadedBytes =
-          stats?.loaded ?? stats?.total ?? data?.payload?.byteLength ?? 0;
-        const loading = stats?.loading;
-        let loadTimeMs = 0;
-
-        if (loading?.start && loading?.end) {
-          loadTimeMs = loading.end - loading.start;
-        } else if (loading?.first && loading?.end) {
-          loadTimeMs = loading.end - loading.first;
-        } else if (stats?.trequest && stats?.tload) {
-          loadTimeMs = stats.tload - stats.trequest;
-        } else if (fragmentStartTime > 0) {
-          loadTimeMs = performance.now() - fragmentStartTime;
-        }
-
-        return { loadedBytes, loadTimeMs };
+      const getFragmentKey = (data: any): object | null => {
+        const key = data?.part || data?.frag;
+        return key && typeof key === 'object' ? key : null;
       };
 
       const checkAndResolve = async () => {
@@ -330,37 +316,41 @@ export async function getVideoResolutionFromM3u8(m3u8Url: string): Promise<{
       };
 
       // 监听片段加载
-      hls.on(Hls.Events.FRAG_LOADING, () => {
-        if (!hasSpeedCalculated) {
-          fragmentStartTime = performance.now();
+      hls.on(Hls.Events.FRAG_LOADING, (event: any, data: any) => {
+        if (hasSpeedCalculated || !isMeasurableMediaFragment(data)) return;
+
+        const fragmentKey = getFragmentKey(data);
+        if (fragmentKey) {
+          fragmentStartTimes.set(fragmentKey, performance.now());
         }
       });
 
       hls.on(Hls.Events.FRAG_LOADED, (event: any, data: any) => {
-        if (hasSpeedCalculated) return;
+        if (hasSpeedCalculated || !isMeasurableMediaFragment(data)) return;
 
         sampleAttempts += 1;
-        const { loadedBytes, loadTimeMs } = getFragmentLoadMetrics(data);
-
-        if (loadedBytes > 0 && loadTimeMs > 0) {
-          const normalizedTimeMs = Math.max(loadTimeMs, minSampleDurationMs);
-          let speedKBps = loadedBytes / 1024 / (normalizedTimeMs / 1000);
-          speedKBps = Math.min(speedKBps, maxSpeedMBps * 1024);
-          speedSamples.push(speedKBps);
+        const fragmentKey = getFragmentKey(data);
+        const fallbackStartTime = fragmentKey
+          ? fragmentStartTimes.get(fragmentKey) || 0
+          : 0;
+        const sample = getHlsTransferSpeedSample(
+          data,
+          fallbackStartTime,
+          performance.now(),
+        );
+        if (sample) {
+          speedSamples.push(sample);
         }
 
         if (
           speedSamples.length >= requiredSamples ||
           sampleAttempts >= maxSampleAttempts
         ) {
-          if (speedSamples.length > 0) {
-            const avgSpeed =
-              speedSamples.reduce((sum, value) => sum + value, 0) /
-              speedSamples.length;
-            actualLoadSpeed = formatSpeed(avgSpeed);
-          } else {
-            actualLoadSpeed = '未知';
-          }
+          const bytesPerSecond =
+            calculateTransferSpeedBytesPerSecond(speedSamples);
+          actualLoadSpeed = bytesPerSecond
+            ? formatTransferSpeed(bytesPerSecond)
+            : '未知';
           hasSpeedCalculated = true;
           checkAndResolve();
         }

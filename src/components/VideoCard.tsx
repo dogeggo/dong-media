@@ -867,7 +867,7 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(
                   <PlayCircleIcon
                     size={50}
                     strokeWidth={0.8}
-                    className='text-white fill-transparent transition-all duration-300 ease-out hover:fill-primary-500 hover:scale-[1.1]'
+                    className='text-white fill-transparent transition-all duration-300 ease-out hover:text-primary-400 hover:scale-[1.1]'
                     style={
                       {
                         WebkitUserSelect: 'none',

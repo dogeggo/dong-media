@@ -2,17 +2,7 @@
 
 import { Box, Tab, Tabs } from '@mui/material';
 import Hls from 'hls.js';
-import {
-  ChevronDown,
-  ChevronUp,
-  Heart,
-  Menu,
-  Radio,
-  RefreshCw,
-  Search,
-  Tv,
-  X,
-} from 'lucide-react';
+import { Heart, Menu, Radio, RefreshCw, Search, Tv, X } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
@@ -255,11 +245,6 @@ function LivePageClient() {
   const [favorited, setFavorited] = useState(false);
   const favoritedRef = useRef(false);
   const currentChannelRef = useRef<LiveChannel | null>(null);
-
-  // 频道名展开状态
-  const [expandedChannels, setExpandedChannels] = useState<Set<string>>(
-    new Set(),
-  );
 
   // DVR 回放检测状态
   const [dvrDetected, setDvrDetected] = useState(false);
@@ -1153,19 +1138,6 @@ function LivePageClient() {
   const handleSourceSearchChange = (query: string) => {
     setSourceSearchQuery(query);
     debouncedSourceSearch(query);
-  };
-
-  // 切换频道名展开状态
-  const toggleChannelNameExpanded = (channelId: string) => {
-    setExpandedChannels((prev) => {
-      const newSet = new Set(prev);
-      if (newSet.has(channelId)) {
-        newSet.delete(channelId);
-      } else {
-        newSet.add(channelId);
-      }
-      return newSet;
-    });
   };
 
   // 切换收藏
@@ -2129,50 +2101,22 @@ function LivePageClient() {
           <h1 className='text-xl font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2'>
             <Radio className='w-5 h-5 text-primary-500 shrink-0' />
             <div className='min-w-0 flex-1 flex items-center gap-2'>
-              {/* 频道名称 - 点击展开/收起 */}
-              <div
-                className='min-w-0 flex-1 flex items-center gap-1 cursor-pointer select-none group'
-                onClick={() =>
-                  currentChannel && toggleChannelNameExpanded('page-title')
-                }
-              >
-                <div className='min-w-0 flex-1'>
-                  <div
-                    className={
-                      expandedChannels.has('page-title')
-                        ? ''
-                        : 'line-clamp-1 md:line-clamp-2'
-                    }
-                  >
-                    <span className='text-gray-900 dark:text-gray-100'>
-                      {currentSource?.name}
+              <div className='min-w-0 flex-1'>
+                <div className='line-clamp-1 md:line-clamp-2'>
+                  <span className='text-gray-900 dark:text-gray-100'>
+                    {currentSource?.name}
+                  </span>
+                  {currentSource && currentChannel && (
+                    <span className='text-gray-500 dark:text-gray-400'>
+                      {` > ${currentChannel.name}`}
                     </span>
-                    {currentSource && currentChannel && (
-                      <span className='text-gray-500 dark:text-gray-400'>
-                        {` > ${currentChannel.name}`}
-                      </span>
-                    )}
-                    {currentSource && !currentChannel && (
-                      <span className='text-gray-500 dark:text-gray-400'>
-                        {` > ${currentSource.name}`}
-                      </span>
-                    )}
-                  </div>
+                  )}
+                  {currentSource && !currentChannel && (
+                    <span className='text-gray-500 dark:text-gray-400'>
+                      {` > ${currentSource.name}`}
+                    </span>
+                  )}
                 </div>
-                {/* Chevron图标 - 始终显示，带旋转动画 */}
-                {currentChannel && (
-                  <div className='shrink-0 flex items-center gap-1'>
-                    {expandedChannels.has('page-title') ? (
-                      <ChevronUp className='w-4 h-4 text-primary-500 dark:text-primary-400 transition-transform duration-300' />
-                    ) : (
-                      <ChevronDown className='w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:text-primary-500 dark:group-hover:text-primary-400 transition-all duration-300' />
-                    )}
-                    {/* 文字提示 - 仅桌面端显示 */}
-                    <span className='hidden md:inline text-xs text-primary-500 dark:text-primary-400'>
-                      {expandedChannels.has('page-title') ? '收起' : '展开'}
-                    </span>
-                  </div>
-                )}
               </div>
               {/* 播放模式切换按钮 - 显示开关状态和实际播放模式 */}
               {currentChannel && (
@@ -2603,35 +2547,11 @@ function LivePageClient() {
                                       )}
                                     </div>
                                     <div className='flex-1 min-w-0'>
-                                      {/* 频道名 - 点击展开/收起 */}
                                       <div
-                                        className='flex items-center gap-1 cursor-pointer select-none group'
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          toggleChannelNameExpanded(channel.id);
-                                        }}
+                                        className='text-sm font-medium text-gray-900 dark:text-gray-100 line-clamp-1 md:line-clamp-2'
+                                        title={channel.name}
                                       >
-                                        <div className='flex-1 min-w-0'>
-                                          <div
-                                            className={`text-sm font-medium text-gray-900 dark:text-gray-100 ${expandedChannels.has(channel.id) ? '' : 'line-clamp-1 md:line-clamp-2'}`}
-                                          >
-                                            {channel.name}
-                                          </div>
-                                        </div>
-                                        {/* Chevron图标 - 始终显示，带旋转动画 */}
-                                        <div className='shrink-0 flex items-center gap-1'>
-                                          {expandedChannels.has(channel.id) ? (
-                                            <ChevronUp className='w-4 h-4 text-primary-500 dark:text-primary-400 transition-transform duration-300' />
-                                          ) : (
-                                            <ChevronDown className='w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:text-primary-500 dark:group-hover:text-primary-400 transition-all duration-300' />
-                                          )}
-                                          {/* 文字提示 - 仅桌面端显示 */}
-                                          <span className='hidden md:inline text-xs text-primary-500 dark:text-primary-400'>
-                                            {expandedChannels.has(channel.id)
-                                              ? '收起'
-                                              : '展开'}
-                                          </span>
-                                        </div>
+                                        {channel.name}
                                       </div>
                                       {/* 分组名 - 始终单行截断 */}
                                       <div
@@ -2732,38 +2652,14 @@ function LivePageClient() {
                                     )}
                                   </div>
                                   <div className='flex-1 min-w-0'>
-                                    {/* 搜索结果频道名 - 点击展开/收起 */}
                                     <div
-                                      className='flex items-center gap-1 cursor-pointer select-none group'
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        toggleChannelNameExpanded(channel.id);
-                                      }}
+                                      className='text-sm font-medium text-gray-900 dark:text-gray-100 line-clamp-1 md:line-clamp-2'
+                                      title={channel.name}
                                     >
-                                      <div className='flex-1 min-w-0'>
-                                        <div
-                                          className={`text-sm font-medium text-gray-900 dark:text-gray-100 ${expandedChannels.has(channel.id) ? '' : 'line-clamp-1 md:line-clamp-2'}`}
-                                        >
-                                          <HighlightedText
-                                            text={channel.name}
-                                            query={searchQuery}
-                                          />
-                                        </div>
-                                      </div>
-                                      {/* Chevron图标 - 始终显示，带旋转动画 */}
-                                      <div className='shrink-0 flex items-center gap-1'>
-                                        {expandedChannels.has(channel.id) ? (
-                                          <ChevronUp className='w-4 h-4 text-primary-500 dark:text-primary-400 transition-transform duration-300' />
-                                        ) : (
-                                          <ChevronDown className='w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:text-primary-500 dark:group-hover:text-primary-400 transition-all duration-300' />
-                                        )}
-                                        {/* 文字提示 - 仅桌面端显示 */}
-                                        <span className='hidden md:inline text-xs text-primary-500 dark:text-primary-400'>
-                                          {expandedChannels.has(channel.id)
-                                            ? '收起'
-                                            : '展开'}
-                                        </span>
-                                      </div>
+                                      <HighlightedText
+                                        text={channel.name}
+                                        query={searchQuery}
+                                      />
                                     </div>
                                     {/* 搜索结果分组名 - 始终单行截断 */}
                                     <div
@@ -3056,41 +2952,12 @@ function LivePageClient() {
                   </div>
                   <div className='flex-1 min-w-0'>
                     <div className='flex items-center gap-3'>
-                      {/* 当前频道名 - 点击展开/收起 */}
-                      <div
-                        className='flex-1 min-w-0 flex items-center gap-1 cursor-pointer select-none group'
-                        onClick={() =>
-                          toggleChannelNameExpanded('current-channel-info')
-                        }
+                      <h3
+                        className='flex-1 min-w-0 truncate text-lg font-semibold text-gray-900 dark:text-gray-100'
+                        title={currentChannel.name}
                       >
-                        <div className='flex-1 min-w-0'>
-                          <h3 className='text-lg font-semibold text-gray-900 dark:text-gray-100'>
-                            <div
-                              className={
-                                expandedChannels.has('current-channel-info')
-                                  ? ''
-                                  : 'truncate'
-                              }
-                            >
-                              {currentChannel.name}
-                            </div>
-                          </h3>
-                        </div>
-                        {/* Chevron图标 - 始终显示，带旋转动画 */}
-                        <div className='shrink-0 flex items-center gap-1'>
-                          {expandedChannels.has('current-channel-info') ? (
-                            <ChevronUp className='w-4 h-4 text-primary-500 dark:text-primary-400 transition-transform duration-300' />
-                          ) : (
-                            <ChevronDown className='w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:text-primary-500 dark:group-hover:text-primary-400 transition-all duration-300' />
-                          )}
-                          {/* 文字提示 - 仅桌面端显示 */}
-                          <span className='hidden md:inline text-xs text-primary-500 dark:text-primary-400'>
-                            {expandedChannels.has('current-channel-info')
-                              ? '收起'
-                              : '展开'}
-                          </span>
-                        </div>
-                      </div>
+                        {currentChannel.name}
+                      </h3>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
