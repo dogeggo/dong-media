@@ -7,9 +7,7 @@ import {
 } from '@/lib/cache-system/http';
 import { imageDiskCache } from '@/lib/cache-system/media/disk';
 import {
-  createMediaEtag,
   hasFailedPreconditions,
-  hasSensitiveMediaParams,
   isAllowedMediaContentType,
   isNotModified,
   mediaBody,
@@ -55,31 +53,6 @@ export async function GET(request: Request) {
   }
 
   try {
-    if (hasSensitiveMediaParams(parsed)) {
-      const payload = await fetchImage(parsed);
-      let headers = noStoreResponseHeaders({
-        'Content-Type': payload.contentType,
-        'Content-Length': String(payload.data.byteLength),
-        'Access-Control-Allow-Origin': '*',
-        'X-Cache-Status': 'BYPASS',
-        'X-Content-Type-Options': 'nosniff',
-      });
-      const metadata = {
-        etag: payload.etag || createMediaEtag(payload.data),
-        lastModified: payload.lastModified,
-      };
-      headers = conditionalResponseHeaders(metadata, headers);
-      if (hasFailedPreconditions(request, metadata)) {
-        headers.delete('Content-Length');
-        return new Response(null, { status: 412, headers });
-      }
-      if (isNotModified(request, metadata)) {
-        headers.delete('Content-Length');
-        return new Response(null, { status: 304, headers });
-      }
-      return new Response(mediaBody(payload.data), { status: 200, headers });
-    }
-
     const object = await imageDiskCache.getOrCreate(
       parsed.toString(),
       'original',
@@ -87,10 +60,7 @@ export async function GET(request: Request) {
     );
 
     let headers = staticMediaResponseHeaders(
-      {
-        contentAddressed: false,
-        ttlSeconds: remainingTtlSeconds(object.metadata.expiresAt),
-      },
+      { contentAddressed: false },
       {
         'Content-Type': object.metadata.contentType,
         'Content-Length': String(object.metadata.size),
@@ -199,8 +169,4 @@ function errorResponse(message: string, status: number) {
     { error: message },
     { status, headers: noStoreResponseHeaders() },
   );
-}
-
-function remainingTtlSeconds(expiresAt: number): number {
-  return Math.max(0, Math.ceil((expiresAt - Date.now()) / 1_000));
 }

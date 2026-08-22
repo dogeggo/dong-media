@@ -32,7 +32,7 @@ services:
 | `DISABLE_DISK_CACHE`          |      `false` | 设为 `true` 时旁路磁盘层           |
 | `CACHE_ENVIRONMENT`           |   `NODE_ENV` | 多环境共用 Redis 时的 key 隔离名称 |
 
-Vercel 环境自动旁路磁盘层。目录不可写时也会 fail-open 为纯代理，不会让媒体请求因缓存故障失败。带 token、signature、expires 等短时签名参数的源 URL 不进入共享 HTTP 或磁盘缓存。
+Vercel 环境自动旁路磁盘层。目录不可写时也会 fail-open 为纯代理，不会让媒体请求因缓存故障失败。图片接口会尝试抓取包括带 token、signature、expires 等参数在内的源 URL；只要当前服务器成功取得并验证为图片，就统一作为公开图片写入磁盘、Edge 和 R2 缓存。图片 HTTP/Forward 缓存默认使用 7 天长缓存，本地磁盘缓存继续由既有定时清理任务独立管理。视频接口仍会旁路签名媒体的共享 HTTP 与磁盘缓存。
 
 ## Redis/Kvrocks
 
@@ -74,4 +74,4 @@ curl -I 'https://example.com/api/image-proxy?url=https%3A%2F%2Fimages.example.or
 curl -I -H 'Range: bytes=0-1023' 'https://example.com/api/video-proxy?url=https%3A%2F%2Fvideo.example.org%2Fdemo.mp4'
 ```
 
-成功的无签名静态媒体应包含 `public, max-age=604800, s-maxage=604800`；固定 URL 不包含 `immutable`。错误、鉴权响应、短时签名媒体和动态播放清单必须是 `private, no-store, max-age=0`。
+成功图片应包含 `public, max-age=604800, s-maxage=604800`；固定 URL 不包含 `immutable`。图片抓取失败、错误 Content-Type、鉴权错误、短时签名视频和动态播放清单必须是 `private, no-store, max-age=0`。

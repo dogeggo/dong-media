@@ -19,8 +19,8 @@ import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 // 客户端收藏 API
 import {
   clearAllFavorites,
-  getAllFavorites,
-  getAllPlayRecords,
+  fetchAllFavorites,
+  fetchAllPlayRecords,
 } from '@/lib/db.client';
 import { getCurrentUserDataScope, userQueryKeys } from '@/lib/user-query-keys';
 import type { InitialHomeRecommendations } from '@/hooks/useHomeRecommendations';
@@ -172,7 +172,7 @@ export default function HomeClient({ recommendations }: HomeClientProps) {
   // 🚀 TanStack Query - 使用 useQuery 获取收藏数据（自动缓存，跨页面持久化）
   const { data: allFavorites = {} } = useQuery({
     queryKey: userQueryKeys.favorites(userDataScope),
-    queryFn: () => getAllFavorites(),
+    queryFn: fetchAllFavorites,
     enabled: activeTab === 'favorites',
     staleTime: 5 * 60 * 1000, // 5分钟内数据保持新鲜
     gcTime: 10 * 60 * 1000, // 10分钟后垃圾回收
@@ -181,7 +181,7 @@ export default function HomeClient({ recommendations }: HomeClientProps) {
   // 🚀 TanStack Query - 使用 useQuery 获取播放记录（自动缓存，跨页面持久化）
   const { data: allPlayRecords = {} } = useQuery({
     queryKey: userQueryKeys.playRecords(userDataScope),
-    queryFn: () => getAllPlayRecords(),
+    queryFn: fetchAllPlayRecords,
     enabled: activeTab === 'favorites',
     staleTime: 5 * 60 * 1000, // 5分钟内数据保持新鲜
     gcTime: 10 * 60 * 1000, // 10分钟后垃圾回收

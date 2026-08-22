@@ -17,11 +17,13 @@ import {
   generateStorageKey,
   getAllFavorites,
   getAllPlayRecords,
+  getCachedPlayRecords,
   saveFavorite,
   savePlayRecord,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { getDoubanComments, getDoubanDetails } from '@/lib/douban-api';
+import { createLatestTaskQueue } from '@/lib/latest-task-queue';
 import { matchesRequestedYear } from '@/lib/play-source-matching';
 import { PlayRecord, SearchResult } from '@/lib/types';
 import { generateSearchVariants } from '@/lib/utils';
@@ -54,6 +56,57 @@ interface WakeLockSentinel {
   release(): Promise<void>;
   addEventListener(type: 'release', listener: () => void): void;
   removeEventListener(type: 'release', listener: () => void): void;
+}
+
+const PLAY_PROGRESS_SAVE_INTERVAL_MS = 120 * 1000;
+const PLAY_PROGRESS_MIN_DELTA_SECONDS = 15;
+
+interface PlayProgressIdentity {
+  key: string;
+  episode: number;
+  playTime: number;
+  totalTime: number;
+  totalEpisodes: number;
+}
+
+interface PendingPlayProgress {
+  source: string;
+  id: string;
+  record: PlayRecord;
+  identity: PlayProgressIdentity;
+}
+
+function isSamePlayProgress(
+  left: PlayProgressIdentity | null,
+  right: PlayProgressIdentity,
+): boolean {
+  return Boolean(
+    left &&
+    left.key === right.key &&
+    left.episode === right.episode &&
+    left.playTime === right.playTime &&
+    left.totalTime === right.totalTime &&
+    left.totalEpisodes === right.totalEpisodes,
+  );
+}
+
+function shouldQueuePlayProgress(
+  previous: PlayProgressIdentity | null,
+  next: PlayProgressIdentity,
+): boolean {
+  if (!previous) return true;
+  if (
+    previous.key !== next.key ||
+    previous.episode !== next.episode ||
+    previous.totalEpisodes !== next.totalEpisodes ||
+    Math.abs(previous.totalTime - next.totalTime) > 1
+  ) {
+    return true;
+  }
+  return (
+    Math.abs(previous.playTime - next.playTime) >=
+    PLAY_PROGRESS_MIN_DELTA_SECONDS
+  );
 }
 
 function PlayPageClient() {
@@ -794,6 +847,29 @@ function PlayPageClient() {
   // 播放进度保存相关
   const saveIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastSaveTimeRef = useRef<number>(0);
+  const lastQueuedProgressRef = useRef<PlayProgressIdentity | null>(null);
+  const [progressSaveQueue] = useState(() =>
+    createLatestTaskQueue<PendingPlayProgress>(
+      async ({ source, id, record, identity }) => {
+        try {
+          await savePlayRecord(source, id, record, { keepalive: true });
+          console.log('播放进度已保存:', {
+            id,
+            source,
+            title: record.title,
+            episode: identity.episode,
+            year: record.year,
+            progress: `${identity.playTime}/${identity.totalTime}`,
+          });
+        } catch (error) {
+          if (isSamePlayProgress(lastQueuedProgressRef.current, identity)) {
+            lastQueuedProgressRef.current = null;
+          }
+          throw error;
+        }
+      },
+    ),
+  );
 
   // 弹幕加载状态管理，防止重复加载
   const danmuLoadingRef = useRef<boolean>(false);
@@ -2783,49 +2859,66 @@ function PlayPageClient() {
     try {
       const currentTotalEpisodes = newDetail.episodes.length || 1;
       const remarksToSave = newDetail.remarks;
-      await savePlayRecord(newDetail.source, newDetail.id, {
+      const finalPlayTime = Math.floor(
+        recordTime > currentTime ? recordTime : currentTime,
+      );
+      const finalTotalTime = Math.floor(duration);
+      const finalRecord: PlayRecord = {
         title: videoTitleRef.current,
         source_name: newDetail.source_name || '',
         year: newDetail.year,
         cover: newDetail.poster || '',
         index: currentEpisodeIndexRef.current + 1, // 转换为1基索引
         total_episodes: currentTotalEpisodes,
-        play_time: Math.floor(
-          recordTime > currentTime ? recordTime : currentTime,
-        ),
-        total_time: Math.floor(duration),
+        play_time: finalPlayTime,
+        total_time: finalTotalTime,
         save_time: Date.now(),
         search_title: searchTitle,
         remarks: remarksToSave, // 优先使用搜索结果的 remarks，因为详情接口可能没有
         douban_id: videoDoubanIdRef.current || newDetail.douban_id || undefined, // 添加豆瓣ID
-      });
+      };
+      const identity: PlayProgressIdentity = {
+        key: generateStorageKey(newDetail.source, newDetail.id),
+        episode: finalRecord.index,
+        playTime: finalPlayTime,
+        totalTime: finalTotalTime,
+        totalEpisodes: currentTotalEpisodes,
+      };
 
+      if (!shouldQueuePlayProgress(lastQueuedProgressRef.current, identity)) {
+        return;
+      }
+
+      lastQueuedProgressRef.current = identity;
       lastSaveTimeRef.current = Date.now();
-      console.log('播放进度已保存:', {
-        id: newDetail.id,
+      await progressSaveQueue.enqueue({
         source: newDetail.source,
-        title: newDetail.title,
-        episode: currentEpisodeIndexRef.current + 1,
-        year: newDetail.year,
-        progress: `${Math.floor(currentTime)}/${Math.floor(duration)}`,
+        id: newDetail.id,
+        record: finalRecord,
+        identity,
       });
     } catch (err) {
       console.error('保存播放进度失败:', err);
     }
   };
 
+  const saveCurrentPlayProgressRef = useRef(saveCurrentPlayProgress);
+  saveCurrentPlayProgressRef.current = saveCurrentPlayProgress;
+
   useEffect(() => {
-    // 页面即将卸载时保存播放进度和清理资源
-    const handleBeforeUnload = () => {
-      saveCurrentPlayProgress();
+    const flushProgress = () => {
+      void saveCurrentPlayProgressRef.current();
+    };
+
+    const handlePageHide = () => {
+      flushProgress();
       releaseWakeLock();
-      cleanupPlayer(); // 不await，让它异步执行
     };
 
     // 页面可见性变化时保存播放进度和释放 Wake Lock
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-        saveCurrentPlayProgress();
+        flushProgress();
         releaseWakeLock();
       } else if (document.visibilityState === 'visible') {
         // 页面重新可见时，如果正在播放则重新请求 Wake Lock
@@ -2836,15 +2929,15 @@ function PlayPageClient() {
     };
 
     // 添加事件监听器
-    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       // 清理事件监听器
-      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [currentEpisodeIndex, detail, artPlayerRef.current]);
+  }, []);
 
   // ---------------------------------------------------------------------------
   // 收藏相关
@@ -4506,7 +4599,7 @@ function PlayPageClient() {
             !isSourceChangingRef.current &&
             !isEpisodeChangingRef.current
           ) {
-            saveCurrentPlayProgress();
+            void saveCurrentPlayProgressRef.current();
           }
         });
 
@@ -4531,7 +4624,8 @@ function PlayPageClient() {
           // 🔥 重置 video:ended 处理标志，因为这是新视频
           videoEndedHandledRef.current = false;
           try {
-            const allRecords = await getAllPlayRecords();
+            const allRecords =
+              getCachedPlayRecords() || (await getAllPlayRecords());
             const key = generateStorageKey(
               currentSourceRef.current,
               currentIdRef.current,
@@ -4559,7 +4653,7 @@ function PlayPageClient() {
               '成功恢复播放进度到:',
               currentTime,
               playerTime,
-              record.index,
+              record?.index,
               currentEpisodeIndexRef.current,
             );
           } catch (err) {
@@ -4767,14 +4861,14 @@ function PlayPageClient() {
           setVideoDuration(duration);
           // 保存播放进度逻辑 - 优化保存间隔以减少网络开销
           const saveNow = Date.now();
-          const interval = 30000;
+          const interval = PLAY_PROGRESS_SAVE_INTERVAL_MS;
           // 🔥 关键修复：如果当前播放位置接近视频结尾（最后3分钟），不保存进度
           // 这是为了避免自动跳过片尾时保存了片尾位置的进度，导致"继续观看"从错误位置开始
           const remainingTime = duration - currentTime;
           const isNearEnd = duration > 0 && remainingTime < 180; // 最后3分钟
 
           if (saveNow - lastSaveTimeRef.current > interval && !isNearEnd) {
-            saveCurrentPlayProgress();
+            void saveCurrentPlayProgressRef.current();
             lastSaveTimeRef.current = saveNow;
           }
         });
@@ -4851,7 +4945,7 @@ function PlayPageClient() {
       // 标记组件已卸载，终止正在进行的异步操作（如测速）
       isUnmountedRef.current = true;
 
-      saveCurrentPlayProgress();
+      void saveCurrentPlayProgressRef.current();
 
       // 1. 同步清理所有定时器 (确保在组件销毁瞬间停止)
       if (saveIntervalRef.current) {

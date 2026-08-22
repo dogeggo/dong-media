@@ -23,8 +23,8 @@ import { createPortal } from 'react-dom';
 
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 import {
+  fetchAllPlayRecords,
   getAllFavorites,
-  getAllPlayRecords,
   type PlayRecord,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
@@ -185,7 +185,7 @@ export const UserMenu: React.FC<UserMenuProps> = ({ initialOpen = false }) => {
 
   const { data: allPlayRecords = {} } = useQuery({
     queryKey: playRecordsQueryKey,
-    queryFn: () => getAllPlayRecords(),
+    queryFn: fetchAllPlayRecords,
     staleTime: 5 * 60 * 1000,
     gcTime: 10 * 60 * 1000,
     enabled: playRecordsQueryEnabled,

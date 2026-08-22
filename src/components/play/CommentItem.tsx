@@ -3,6 +3,8 @@
 
 import { memo } from 'react';
 
+import { processImageUrl } from '@/lib/image-url';
+
 interface CommentItemProps {
   comment: any;
 }
@@ -18,7 +20,7 @@ const CommentItem = memo(function CommentItem({ comment }: CommentItemProps) {
         <div className='shrink-0'>
           {comment.avatar ? (
             <img
-              src={comment.avatar}
+              src={processImageUrl(comment.avatar)}
               alt={comment.username}
               className='w-10 h-10 rounded-full object-cover'
               onError={(e) => {

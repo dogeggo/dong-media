@@ -107,8 +107,16 @@ async function cronJob() {
 
   try {
     console.log('📅 预热发布日历...');
-    await warmReleaseCalendarCache();
-    console.log('✅ 发布日历预热完成');
+    const calendarCache = await warmReleaseCalendarCache();
+    if (calendarCache.status === 'STALE') {
+      console.warn(
+        `⚠️ 发布日历刷新失败，已保留上一份完整缓存: ${calendarCache.value.items.length} 条`,
+      );
+    } else {
+      console.log(
+        `✅ 发布日历预热完成 (${calendarCache.status}): ${calendarCache.value.items.length} 条`,
+      );
+    }
   } catch (err) {
     console.error('❌ 发布日历预热失败:', err);
   }

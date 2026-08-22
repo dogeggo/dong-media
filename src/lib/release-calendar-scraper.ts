@@ -1,12 +1,34 @@
 'use server';
 
-import { ReleaseCalendarItem } from './types';
-import { getRandomUserAgentWithInfo, getSecChUaHeaders } from './user-agent';
+import { assertCompleteReleaseCalendar } from './release-calendar-validation.ts';
+import type { ReleaseCalendarItem } from './types.ts';
+import { getRandomUserAgentWithInfo, getSecChUaHeaders } from './user-agent.ts';
 
 const baseUrl = 'https://g.manmankan.com/dy2013';
 const MAX_SCRAPE_RETRIES = 1;
 const RETRY_DELAYS = [1500];
 const UPSTREAM_TIMEOUT_MS = 12_000;
+
+function createHttpStatusError(response: Response, url: string): Error {
+  const statusText = response.statusText ? ` ${response.statusText}` : '';
+  const edge = [response.headers.get('server'), response.headers.get('via')]
+    .filter(Boolean)
+    .join('; ');
+  const edgeDetails = edge ? ` [${edge}]` : '';
+  return new Error(
+    `HTTP ${response.status}${statusText}: ${url}${edgeDetails}`,
+  );
+}
+
+function assertParsedReleases(
+  items: ReleaseCalendarItem[],
+  label: string,
+  url: string,
+): void {
+  if (items.length === 0) {
+    throw new Error(`${label}未解析到可用数据: ${url}`);
+  }
+}
 
 /**
  * 生成唯一ID
@@ -274,12 +296,11 @@ export async function scrapeMovieReleases(
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
+    if (!response.ok) throw createHttpStatusError(response, url);
 
     const html = await response.text();
     const items = parseMovieHTML(html);
+    assertParsedReleases(items, '电影时间表', url);
 
     console.log(`✅ 电影数据抓取成功: ${items.length} 部`);
     return items;
@@ -336,12 +357,11 @@ export async function scrapeTVReleases(
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
+    if (!response.ok) throw createHttpStatusError(response, url);
 
     const html = await response.text();
     const items = parseTVHTML(html);
+    assertParsedReleases(items, '电视剧时间表', url);
 
     console.log(`✅ 电视剧数据抓取成功: ${items.length} 部`);
     return items;
@@ -627,15 +647,15 @@ function parseHomepageHTML(
  * 抓取电影首页（包含2026年1月数据）
  */
 const HOMEPAGE_DOMAINS = [
-  'https://g.manmankan.com',
-  'https://m.manmankan.com',
   'https://www.manmankan.com',
+  'https://g.manmankan.com',
 ];
 
-async function fetchHomepageHtmlWithFallback(
+async function fetchHomepageItemsWithFallback(
   path: string,
+  type: 'movie' | 'tv',
   headers: Record<string, string>,
-): Promise<{ html: string; url: string }> {
+): Promise<{ items: ReleaseCalendarItem[]; url: string }> {
   let lastError: unknown;
 
   for (const domain of HOMEPAGE_DOMAINS) {
@@ -649,15 +669,19 @@ async function fetchHomepageHtmlWithFallback(
         signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
+      if (!response.ok) throw createHttpStatusError(response, url);
 
       const html = await response.text();
-      return { html, url };
+      const items = parseHomepageHTML(html, type);
+      assertParsedReleases(
+        items,
+        type === 'movie' ? '电影首页' : '电视剧首页',
+        url,
+      );
+      return { items, url };
     } catch (error) {
       lastError = error;
-      console.warn(`Homepage fetch failed for ${url}:`, error);
+      console.warn(`Homepage source unavailable for ${url}:`, error);
     }
   }
 
@@ -671,13 +695,12 @@ export async function scrapeMovieHomepage(
   retryCount = 0,
 ): Promise<ReleaseCalendarItem[]> {
   try {
-    // 使用 www.manmankan.com 而不是 g.manmankan.com
     const path = '/dy2013/dianying/';
 
     const { ua, browser, platform } = getRandomUserAgentWithInfo();
     const secChHeaders = getSecChUaHeaders(browser, platform);
 
-    const { html } = await fetchHomepageHtmlWithFallback(path, {
+    const { items, url } = await fetchHomepageItemsWithFallback(path, 'movie', {
       Accept:
         'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
       'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
@@ -691,9 +714,8 @@ export async function scrapeMovieHomepage(
       'Upgrade-Insecure-Requests': '1',
       'User-Agent': ua,
     });
-    const items = parseHomepageHTML(html, 'movie');
 
-    console.log(`✅ 电影首页数据抓取成功: ${items.length} 部`);
+    console.log(`✅ 电影首页数据抓取成功 (${url}): ${items.length} 部`);
     return items;
   } catch (error) {
     console.error(
@@ -726,7 +748,7 @@ export async function scrapeTVHomepage(
     const { ua, browser, platform } = getRandomUserAgentWithInfo();
     const secChHeaders = getSecChUaHeaders(browser, platform);
 
-    const { html } = await fetchHomepageHtmlWithFallback(path, {
+    const { items, url } = await fetchHomepageItemsWithFallback(path, 'tv', {
       Accept:
         'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
       'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
@@ -740,9 +762,8 @@ export async function scrapeTVHomepage(
       'Upgrade-Insecure-Requests': '1',
       'User-Agent': ua,
     });
-    const items = parseHomepageHTML(html, 'tv');
 
-    console.log(`✅ 电视剧首页数据抓取成功: ${items.length} 部`);
+    console.log(`✅ 电视剧首页数据抓取成功 (${url}): ${items.length} 部`);
     return items;
   } catch (error) {
     console.error(
@@ -806,9 +827,7 @@ export async function scrapeAllReleases(): Promise<ReleaseCalendarItem[]> {
 
     // 合并所有数据，去重（按title和releaseDate去重）
     const allItems = [...movies, ...tvShows];
-    if (allItems.length === 0) {
-      throw new Error('Release calendar upstreams returned no usable data');
-    }
+    assertCompleteReleaseCalendar(allItems, '发布日历上游返回数据');
     const uniqueItems = allItems.filter(
       (item, index, self) =>
         index ===

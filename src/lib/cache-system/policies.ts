@@ -295,6 +295,9 @@ export const CACHE_POLICIES = {
   }),
   RELEASE_CALENDAR: policy({
     namespace: 'release-calendar',
+    // Version 1 may contain partial snapshots written before both release
+    // types were required. Use a new key so those entries are never served.
+    version: 2,
     scope: 'public',
     freshTtlSeconds: 8 * 60 * 60,
     // Keep the last successful calendar for a week so latency-sensitive home

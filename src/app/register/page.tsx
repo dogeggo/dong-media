@@ -11,6 +11,8 @@ import {
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 
+import { processImageUrl } from '@/lib/image-url';
+
 import { useSite } from '@/components/SiteProvider';
 import { ThemeToggle } from '@/components/ThemeToggle';
 
@@ -37,7 +39,7 @@ function RegisterPageClient() {
         const response = await fetch('/api/bing-wallpaper');
         const data = await response.json();
         if (data.url) {
-          setBingWallpaper(data.url);
+          setBingWallpaper(processImageUrl(data.url));
         }
       } catch (error) {
         console.log('Failed to fetch Bing wallpaper:', error);

@@ -6,7 +6,7 @@ import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 
 import type { PlayRecord } from '@/lib/db.client';
-import { clearAllPlayRecords, getAllPlayRecords } from '@/lib/db.client';
+import { clearAllPlayRecords, fetchAllPlayRecords } from '@/lib/db.client';
 import { getCurrentUserDataScope, userQueryKeys } from '@/lib/user-query-keys';
 import {
   checkWatchingUpdates,
@@ -54,7 +54,7 @@ export default function ContinueWatching({ className }: ContinueWatchingProps) {
 
   const { data: allPlayRecords = {}, isLoading } = useQuery({
     queryKey: playRecordsQueryKey,
-    queryFn: () => getAllPlayRecords(),
+    queryFn: fetchAllPlayRecords,
     staleTime: 5 * 60 * 1000,
     gcTime: 10 * 60 * 1000,
     placeholderData: () =>

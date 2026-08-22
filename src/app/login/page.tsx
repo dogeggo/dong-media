@@ -4,6 +4,7 @@ import { AlertCircle, Lock, Sparkles, User, UserPlus } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 
+import { processImageUrl } from '@/lib/image-url';
 import {
   normalizeLoginRedirect,
   sanitizeInternalRedirect,
@@ -49,7 +50,7 @@ function LoginPageClient() {
         const response = await fetch('/api/bing-wallpaper');
         const data = await response.json();
         if (data.url) {
-          setBingWallpaper(data.url);
+          setBingWallpaper(processImageUrl(data.url));
         }
       } catch (error) {
         console.log('Failed to fetch Bing wallpaper:', error);

@@ -851,6 +851,7 @@ export abstract class BaseRedisStorage implements IStorage {
   async updateUserStats(
     username: string,
     playRecord?: PlayRecord,
+    existingPlayRecord?: PlayRecord | null,
   ): Promise<UserStat> {
     try {
       const loginStatsKey = `user_login_stats:${username}`;
@@ -898,7 +899,7 @@ export abstract class BaseRedisStorage implements IStorage {
         }
       }
       if (playRecord) {
-        await updateWatchTime(playRecord, userStat);
+        await updateWatchTime(playRecord, userStat, existingPlayRecord);
         if (ct - userStat.lastPlayTime > 10 * 60 * 1000) {
           userStat.totalPlays += 1;
         }
@@ -921,13 +922,14 @@ export abstract class BaseRedisStorage implements IStorage {
 export async function updateWatchTime(
   record: PlayRecord,
   userStat: UserStat,
+  knownExistingRecord?: PlayRecord | null,
 ): Promise<void> {
   if (!record.key) return;
   try {
-    const existingRecord = await db.getPlayRecord(
-      userStat.username,
-      record.key,
-    );
+    const existingRecord =
+      knownExistingRecord === undefined
+        ? await db.getPlayRecord(userStat.username, record.key)
+        : knownExistingRecord;
     if (!existingRecord) return;
     // 获取上次播放进度和更新时间
     const lastProgress = existingRecord.play_time;

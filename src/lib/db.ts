@@ -304,8 +304,13 @@ export class DbManager {
   async updateUserStats(
     username: string,
     playRecord?: PlayRecord,
+    existingPlayRecord?: PlayRecord | null,
   ): Promise<void> {
-    await this.storage.updateUserStats(username, playRecord);
+    await this.storage.updateUserStats(
+      username,
+      playRecord,
+      existingPlayRecord,
+    );
   }
 }
 

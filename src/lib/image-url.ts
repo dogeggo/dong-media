@@ -3,6 +3,19 @@
  * 中文转换、HTML 解码和 HLS 测速等无关工具。
  */
 export function processImageUrl(originalUrl: string): string {
-  if (!originalUrl || originalUrl.startsWith('/')) return originalUrl;
-  return `/api/image-proxy?url=${encodeURIComponent(originalUrl)}`;
+  const value = originalUrl.trim();
+
+  if (!value || (value.startsWith('/') && !value.startsWith('//'))) {
+    return originalUrl;
+  }
+
+  const normalizedUrl = value.startsWith('//') ? `https:${value}` : value;
+
+  try {
+    const parsed = new URL(normalizedUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return originalUrl;
+    return `/api/image-proxy?url=${encodeURIComponent(parsed.toString())}`;
+  } catch {
+    return originalUrl;
+  }
 }

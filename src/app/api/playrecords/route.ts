@@ -127,7 +127,7 @@ export async function POST(request: NextRequest) {
       const movieKey = `${record.title}_${record.year}`;
       await db.getClient().sAdd(userMovieHis, movieKey);
     }
-    await db.updateUserStats(authInfo.username, finalRecord);
+    await db.updateUserStats(authInfo.username, finalRecord, existingRecord);
     await db.savePlayRecord(authInfo.username, key, finalRecord);
     return json({ success: true, record: finalRecord }, { status: 200 });
   } catch (err) {

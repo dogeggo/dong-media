@@ -1,5 +1,6 @@
 import { CACHE_POLICIES, cacheService } from './cache-system/index.ts';
 import { getReleaseCalendarWithFilters } from './release-calendar-scraper.ts';
+import { assertCompleteReleaseCalendar } from './release-calendar-validation.ts';
 import type { ReleaseCalendarResult } from './types.ts';
 
 export type CalendarCacheValue = ReleaseCalendarResult;
@@ -8,9 +9,7 @@ export const RELEASE_CALENDAR_CACHE_PARAMS = { projection: 'full' } as const;
 
 async function loadFullCalendar(): Promise<CalendarCacheValue> {
   const { allCalendar, filters } = await getReleaseCalendarWithFilters({});
-  if (allCalendar.items.length === 0) {
-    throw new Error('发布日历上游未返回可用数据');
-  }
+  assertCompleteReleaseCalendar(allCalendar.items, '发布日历缓存候选数据');
   return {
     items: allCalendar.items,
     total: allCalendar.total,

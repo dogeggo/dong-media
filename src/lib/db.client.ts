@@ -25,6 +25,8 @@ const STORAGE_KEYS = {
 } as const;
 
 const SEARCH_HISTORY_LIMIT = 20;
+const PLAY_RECORDS_STALE_TIME = 5 * 60 * 1000;
+const FAVORITES_STALE_TIME = 5 * 60 * 1000;
 const USER_DATA_EVENT = 'dongMediaUserDataChanged';
 const USER_DATA_CHANNEL = 'dong-media-user-data-v2';
 
@@ -46,6 +48,16 @@ interface UserDataChange {
   kind: UserDataQueryKind;
   scope: string;
   data?: unknown;
+  playRecordsPatch?: PlayRecordsPatch;
+}
+
+type PlayRecordsPatch =
+  | { operation: 'upsert'; key: string; record: PlayRecord }
+  | { operation: 'delete'; key: string }
+  | { operation: 'clear' };
+
+export interface SavePlayRecordOptions {
+  keepalive?: boolean;
 }
 
 let channel: BroadcastChannel | null | undefined;
@@ -70,11 +82,14 @@ function getBroadcastChannel(): BroadcastChannel | null {
       ) {
         return;
       }
+      if (
+        change.kind === 'play-records' &&
+        change.playRecordsPatch &&
+        applyRemotePlayRecordsPatch(change)
+      ) {
+        return;
+      }
       const queryClient = getQueryClient();
-      void queryClient.invalidateQueries({
-        queryKey: userDataQueryKey(change.kind, change.scope),
-        exact: true,
-      });
       if (change.kind === 'play-records') {
         void queryClient.invalidateQueries({
           queryKey: userQueryKeys.watchingUpdates(change.scope),
@@ -87,12 +102,65 @@ function getBroadcastChannel(): BroadcastChannel | null {
   return channel;
 }
 
+function applyRemotePlayRecordsPatch(change: UserDataChange): boolean {
+  const patch = change.playRecordsPatch;
+  if (!patch) return false;
+
+  const queryClient = getQueryClient();
+  const queryKey = userQueryKeys.playRecords(change.scope);
+  const current =
+    queryClient.getQueryData<Record<string, PlayRecord>>(queryKey);
+
+  queryClient.removeQueries({
+    queryKey: userQueryKeys.watchingUpdates(change.scope),
+    exact: true,
+  });
+
+  let next: Record<string, PlayRecord> | undefined;
+  if (patch.operation === 'clear') {
+    next = {};
+  } else if (current) {
+    next = { ...current };
+    if (patch.operation === 'delete') {
+      delete next[patch.key];
+    } else {
+      const existing = next[patch.key];
+      if (!existing || patch.record.save_time >= existing.save_time) {
+        next[patch.key] = patch.record;
+      }
+    }
+  }
+
+  if (!next) {
+    // 未加载过完整列表时不能用单条增量构造不完整缓存。只有存在活跃消费方
+    // 才回源一次；TanStack Query 会合并同一 key 的并发刷新。
+    void queryClient.invalidateQueries({
+      queryKey,
+      exact: true,
+      refetchType: 'active',
+    });
+    return true;
+  }
+
+  queryClient.setQueryData(queryKey, next);
+  window.dispatchEvent(
+    new CustomEvent(USER_DATA_EVENT, {
+      detail: { ...change, data: next } satisfies UserDataChange,
+    }),
+  );
+  return true;
+}
+
 function triggerGlobalError(message: string): void {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new CustomEvent('globalError', { detail: { message } }));
 }
 
-function emitChange<T>(event: UserDataUpdateEvent, data: T): void {
+function emitChange<T>(
+  event: UserDataUpdateEvent,
+  data: T,
+  playRecordsPatch?: PlayRecordsPatch,
+): void {
   if (typeof window === 'undefined') return;
   const scope = getCurrentUserDataScope();
   if (event === 'playRecordsUpdated') {
@@ -108,6 +176,7 @@ function emitChange<T>(event: UserDataUpdateEvent, data: T): void {
     kind: eventKind[event],
     scope,
     data,
+    playRecordsPatch,
   };
   window.dispatchEvent(new CustomEvent(USER_DATA_EVENT, { detail: change }));
   getBroadcastChannel()?.postMessage({ ...change, data: undefined });
@@ -145,7 +214,13 @@ async function refreshBroadcastChange(change: UserDataChange): Promise<void> {
       }),
     );
   } catch {
-    // The query remains invalidated and will retry through its normal consumer.
+    // 不在广播处理器中立即发起第二次请求；标记为 stale，交给正常消费方
+    // 在下次挂载或聚焦时重新校验。
+    void getQueryClient().invalidateQueries({
+      queryKey: userDataQueryKey(change.kind, change.scope),
+      exact: true,
+      refetchType: 'none',
+    });
   }
 }
 
@@ -206,6 +281,7 @@ export class UserDataRepository {
     source: string,
     id: string,
     input: PlayRecord,
+    options: SavePlayRecordOptions = {},
   ): Promise<void> {
     const key = generateStorageKey(source, id);
     const scope = getCurrentUserDataScope();
@@ -233,7 +309,11 @@ export class UserDataRepository {
       const next = { ...records, [key]: record };
       writeLocal(STORAGE_KEYS.playRecords, next);
       updateQuery('play-records', next);
-      emitChange('playRecordsUpdated', next);
+      emitChange('playRecordsUpdated', next, {
+        operation: 'upsert',
+        key,
+        record,
+      });
       return;
     }
 
@@ -242,6 +322,7 @@ export class UserDataRepository {
       {
         method: 'POST',
         body: JSON.stringify({ key, record }),
+        keepalive: options.keepalive,
       },
     );
     const current =
@@ -251,10 +332,18 @@ export class UserDataRepository {
     if (current) {
       const next = { ...current, [key]: result.record };
       updateQuery('play-records', next);
-      emitChange('playRecordsUpdated', next);
+      emitChange('playRecordsUpdated', next, {
+        operation: 'upsert',
+        key,
+        record: result.record,
+      });
     } else {
       const refreshed = await this.getPlayRecords();
-      emitChange('playRecordsUpdated', refreshed);
+      emitChange('playRecordsUpdated', refreshed, {
+        operation: 'upsert',
+        key,
+        record: result.record,
+      });
     }
   }
 
@@ -278,7 +367,7 @@ export class UserDataRepository {
       delete next[key];
       writeLocal(STORAGE_KEYS.playRecords, next);
       updateQuery('play-records', next);
-      emitChange('playRecordsUpdated', next);
+      emitChange('playRecordsUpdated', next, { operation: 'delete', key });
     } else {
       const result = await requestJson<{ record: PlayRecord | null }>(
         `/api/playrecords?key=${encodeURIComponent(key)}`,
@@ -289,10 +378,16 @@ export class UserDataRepository {
         records = { ...records };
         delete records[key];
         updateQuery('play-records', records);
-        emitChange('playRecordsUpdated', records);
+        emitChange('playRecordsUpdated', records, {
+          operation: 'delete',
+          key,
+        });
       } else {
         records = await this.getPlayRecords();
-        emitChange('playRecordsUpdated', records);
+        emitChange('playRecordsUpdated', records, {
+          operation: 'delete',
+          key,
+        });
       }
     }
 
@@ -306,7 +401,7 @@ export class UserDataRepository {
     if (isLocalStorageMode()) localStorage.removeItem(STORAGE_KEYS.playRecords);
     else await requestJson('/api/playrecords', { method: 'DELETE' });
     updateQuery('play-records', {});
-    emitChange('playRecordsUpdated', {});
+    emitChange('playRecordsUpdated', {}, { operation: 'clear' });
   }
 
   async getFavorites(): Promise<Record<string, Favorite>> {
@@ -513,19 +608,45 @@ export class UserDataRepository {
 
 export const userDataRepository = new UserDataRepository();
 
-export async function getAllPlayRecords(
-  _forceRefresh = false,
-): Promise<Record<string, PlayRecord>> {
+export function fetchAllPlayRecords(): Promise<Record<string, PlayRecord>> {
   return userDataRepository.getPlayRecords();
+}
+
+export function fetchAllFavorites(): Promise<Record<string, Favorite>> {
+  return userDataRepository.getFavorites();
+}
+
+export function getCachedPlayRecords(): Record<string, PlayRecord> | undefined {
+  const scope = getCurrentUserDataScope();
+  return getQueryClient().getQueryData(userQueryKeys.playRecords(scope));
+}
+
+export async function getAllPlayRecords(
+  forceRefresh = false,
+): Promise<Record<string, PlayRecord>> {
+  const scope = getCurrentUserDataScope();
+  const queryClient = getQueryClient();
+  const queryKey = userQueryKeys.playRecords(scope);
+  const query = {
+    queryKey,
+    queryFn: fetchAllPlayRecords,
+    staleTime: PLAY_RECORDS_STALE_TIME,
+    gcTime: 10 * 60 * 1000,
+  };
+
+  return forceRefresh
+    ? queryClient.fetchQuery({ ...query, staleTime: 0 })
+    : queryClient.ensureQueryData(query);
 }
 
 export async function savePlayRecord(
   source: string,
   id: string,
   record: PlayRecord,
+  options: SavePlayRecordOptions = {},
 ): Promise<void> {
   try {
-    await userDataRepository.savePlayRecord(source, id, record);
+    await userDataRepository.savePlayRecord(source, id, record, options);
   } catch (error) {
     triggerGlobalError('保存播放记录失败');
     throw error;
@@ -544,7 +665,14 @@ export function clearAllPlayRecords(): Promise<void> {
 }
 
 export function getAllFavorites(): Promise<Record<string, Favorite>> {
-  return userDataRepository.getFavorites();
+  const scope = getCurrentUserDataScope();
+
+  return getQueryClient().fetchQuery({
+    queryKey: userQueryKeys.favorites(scope),
+    queryFn: fetchAllFavorites,
+    staleTime: FAVORITES_STALE_TIME,
+    gcTime: 10 * 60 * 1000,
+  });
 }
 
 export function saveFavorite(
@@ -563,7 +691,7 @@ export async function isFavorited(
   source: string,
   id: string,
 ): Promise<boolean> {
-  const favorites = await userDataRepository.getFavorites();
+  const favorites = await getAllFavorites();
   return Boolean(favorites[generateStorageKey(source, id)]);
 }
 

@@ -199,7 +199,11 @@ export interface IStorage {
   getUserStat(userName: string): Promise<UserStat>;
   getUserStatsSnapshot(userName: string): Promise<UserStatsSnapshot>;
   // 登入统计相关
-  updateUserStats(username: string, playRecord?: PlayRecord): Promise<UserStat>;
+  updateUserStats(
+    username: string,
+    playRecord?: PlayRecord,
+    existingPlayRecord?: PlayRecord | null,
+  ): Promise<UserStat>;
 }
 
 // 搜索结果数据结构

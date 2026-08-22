@@ -25,6 +25,10 @@ const nextConfig = {
 
   // Uncoment to add domain whitelist
   images: {
+    // 外部图片已经统一转换为同源 /api/image-proxy。让浏览器直接请求该
+    // 路径，才能由站点前置的 Forward Worker 命中 Edge/R2，而不是先被
+    // Next.js 改写为 /_next/image 后再从应用服务器二次拉取。
+    unoptimized: true,
     qualities: [75, 85, 100],
     localPatterns: [
       {
